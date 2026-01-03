@@ -10,133 +10,129 @@ st.title("📊 Statistikverktyg för Kleiner Münsterländer")
 st.markdown("Ladda upp resultatfilen (**Eftersök 2025.txt**) för att generera underlag till verksamhetsberättelsen.")
 
 # --- 1. LADDA UPP FIL ---
-uploaded_file = st.file_uploader("Välj textfil", type=["txt"])
+uploaded_file = st.file_uploader("Välj textfil", type=["txt", "csv"])
 
 if uploaded_file is not None:
-    # Läs in filen (hanterar svenska tecken)
+    # Läs in filen
     content = uploaded_file.getvalue()
     try:
+        # Försök läsa med latin-1 (vanligast för svenska Excel-exporter)
         text_data = content.decode("latin-1")
     except:
+        # Fallback till utf-8 om latin-1 misslyckas
         text_data = content.decode("utf-8", errors="ignore")
     
     lines = text_data.split('\n')
     data = []
+    
+    # Hitta rubrikraden (oftast rad 1) för att veta var kolumnerna finns
+    header = lines[0].split('\t')
+    
+    # Hjälpfunktion för att hitta kolumnindex (svarar -1 om den inte hittas)
+    def get_col_index(headers, possible_names):
+        for name in possible_names:
+            for i, h in enumerate(headers):
+                if name.lower() == h.strip().lower():
+                    return i
+        return -1
 
-    # --- 2. REGELVERK (LOGIKEN) ---
-    def bedom_eftersok(vatten, spar):
-        # Enligt § 8: Lägst betyg 4 krävs i samtliga grenar för pris
-        if vatten < 4 or spar < 4:
-            return "0 Pris (Ej Godkänd)"
-        if vatten == 10 and spar == 10:
-            return "Godkänd (Full pott 10-10)"
-        return "Godkänd"
+    # Identifiera viktiga kolumner dynamiskt
+    idx_datum = get_col_index(header, ["Datum", "Provdatum"])
+    idx_ras = get_col_index(header, ["rasnamn", "Ras", "Hundras"])
+    idx_hund = get_col_index(header, ["namn", "Hund", "Hundnamn"])
+    idx_regnr = get_col_index(header, ["regnr", "Reg.nr", "Registreringsnummer"])
+    idx_klass = get_col_index(header, ["Klass", "Provklass"])
+    idx_vatten = get_col_index(header, ["Vatten", "Vattenarbete"])
+    idx_spar = get_col_index(header, ["Spar", "Spår", "Spårarbete"])
+    idx_kritik = get_col_index(header, ["Kritik", "Domarkritik", "KritikVatten"]) # Tar första bästa kritik-kolumn
 
-    # --- 3. TOLKA FILEN ---
-    for line in lines:
-        # Vi letar efter rader som börjar med ett datum (t.ex. 25-05-15)
-        if re.match(r'^\d{2}-\d{2}-\d{2}', line):
+    # Kontroll: Hittade vi Vatten och Spår?
+    if idx_vatten == -1 or idx_spar == -1:
+        st.error(f"Kunde inte hitta kolumnerna för 'Vatten' och 'Spar/Spår'. Kontrollera filens rubriker. Hittade rubriker: {header}")
+    else:
+        # --- 2. REGELVERK (LOGIKEN) ---
+        def bedom_eftersok(vatten, spar):
+            if vatten < 4 or spar < 4:
+                return "0 Pris (Ej Godkänd)"
+            if vatten == 10 and spar == 10:
+                return "Godkänd (Full pott 10-10)"
+            return "Godkänd"
+
+        # --- 3. TOLKA FILEN ---
+        for line in lines[1:]: # Hoppa över rubrikraden
             parts = line.split('\t')
             
-            # Grovsortering: Är raden tillräckligt lång?
-            if len(parts) > 30:
-                ras = parts[4].strip()
+            # Kontrollera att raden har data
+            if len(parts) > max(idx_vatten, idx_spar):
+                # Hämta ras om kolumnen finns, annars anta att det är rätt fil
+                ras = parts[idx_ras].strip() if idx_ras != -1 else "Okänd"
                 
-                # FILTER: VI SPARAR BARA KLEINER MÜNSTERLÄNDER
-                if "Kleiner" in ras or "Münsterländer" in ras: 
+                # FILTER: VI SPARAR BARA KLEINER MÜNSTERLÄNDER (Om vi kan läsa rasen)
+                if idx_ras == -1 or ("Kleiner" in ras or "Münsterländer" in ras or "kleiner" in ras): 
                     try:
-                        # Hämta poängen. I din fil ligger de ofta på index 27 (Vatten) och 28 (Spår).
-                        # Vi gör det robust genom att tvinga till heltal.
-                        raw_vatten = parts[27]
-                        raw_spar = parts[28]
+                        raw_vatten = parts[idx_vatten]
+                        raw_spar = parts[idx_spar]
                         
-                        poang_vatten = int(raw_vatten) if raw_vatten.isdigit() else 0
-                        poang_spar = int(raw_spar) if raw_spar.isdigit() else 0
+                        # Hantera "Eg" (Egenskapsbedömd/Ej godkänd) eller tomma värden som 0
+                        poang_vatten = int(raw_vatten) if raw_vatten.strip().isdigit() else 0
+                        poang_spar = int(raw_spar) if raw_spar.strip().isdigit() else 0
                     except:
                         poang_vatten = 0
                         poang_spar = 0
 
-                    # Skapa datapunkten
+                    # Hämta övrig data
+                    datum = parts[idx_datum] if idx_datum != -1 else "-"
+                    hund = parts[idx_hund] if idx_hund != -1 else "-"
+                    regnr = parts[idx_regnr] if idx_regnr != -1 else "-"
+                    klass = parts[idx_klass] if idx_klass != -1 else "-"
+                    kritik = parts[idx_kritik] if idx_kritik != -1 else ""
+
                     entry = {
-                        "Datum": parts[0],
-                        "Klass": parts[1],
-                        "Hund": parts[2],
-                        "Regnr": parts[3],
+                        "Datum": datum,
+                        "Klass": klass,
+                        "Hund": hund,
+                        "Regnr": regnr,
                         "Vatten (Indata)": poang_vatten,
                         "Spår (Indata)": poang_spar,
                         "Resultat": bedom_eftersok(poang_vatten, poang_spar),
-                        "Kritik": " ".join(parts[40:]).strip() # Slår ihop kritiken på slutet
+                        "Kritik": kritik
                     }
                     data.append(entry)
 
-    if not data:
-        st.error("Inga hundar av rasen Kleiner Münsterländer hittades. Är det rätt fil?")
-    else:
-        df_klm = pd.DataFrame(data)
+        if not data:
+            st.warning("Inga hundar hittades. Kontrollera att filen innehåller 'Kleiner Münsterländer' om den har en ras-kolumn.")
+        else:
+            df_klm = pd.DataFrame(data)
 
-        # --- 4. VISA RESULTATET (FLIKAR) ---
-        tab1, tab2 = st.tabs(["📈 Statistik & Rapport", "🔍 Validering (Kontrollera data)"])
+            # --- 4. VISA RESULTATET ---
+            tab1, tab2 = st.tabs(["📈 Statistik & Rapport", "🔍 Validering"])
 
-        # --- FLIK 1: STATISTIK ---
-        with tab1:
-            st.success(f"Inläsningen klar! Hittade {len(df_klm)} starter för KLM.")
-            st.divider()
-            
-            # Siffror till Tabell 2 i Word-dokumentet
-            st.subheader("Underlag till Tabell 2 (Verksamhetsberättelsen)")
-            col1, col2 = st.columns(2)
-            col1.metric("Antal starter (Eftersök)", len(df_klm))
-            col2.metric("Unika individer (Eftersök)", df_klm['Regnr'].nunique())
-            
-            st.info("Ovanstående siffror fyller du i för år 2025 i Tabell 2.")
-            
-            st.divider()
+            with tab1:
+                st.success(f"Inläsningen klar! Hittade {len(df_klm)} starter.")
+                st.divider()
+                
+                col1, col2 = st.columns(2)
+                col1.metric("Antal starter", len(df_klm))
+                col2.metric("Unika individer", df_klm['Regnr'].nunique())
+                
+                st.divider()
+                st.subheader("Resultatfördelning")
+                st.bar_chart(df_klm['Resultat'].value_counts())
 
-            # Resultatfördelning (Till Tabell 3)
-            st.subheader("Resultatfördelning")
-            resultat_stats = df_klm['Resultat'].value_counts()
-            
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.dataframe(resultat_stats, use_container_width=True)
-            with c2:
-                st.bar_chart(resultat_stats)
+                # Excel-export
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_klm.to_excel(writer, index=False, sheet_name='Data 2025')
+                
+                st.download_button("📥 Ladda ner Excel", output.getvalue(), "KLM_Statistik_2025.xlsx", "application/vnd.ms-excel")
 
-            # Ladda ner Excel
-            st.subheader("Exportera")
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_klm.to_excel(writer, index=False, sheet_name='Data 2025')
-            
-            st.download_button(
-                label="📥 Ladda ner färdig Excel-fil",
-                data=output.getvalue(),
-                file_name="KLM_Statistik_2025.xlsx",
-                mime="application/vnd.ms-excel"
-            )
-
-        # --- FLIK 2: VALIDERING ---
-        with tab2:
-            st.markdown("### 🕵️‍♀️ Validering")
-            st.markdown("""
-            Använd denna lista för att stickprovskontrollera att appen läst rätt siffror.
-            1. Öppna din **original-textfil**.
-            2. Jämför en hund i listan nedan mot textfilen.
-            3. Stämmer kolumnerna **Vatten** och **Spår**?
-            """)
-
-            # Visa hela tabellen sökbar
-            st.dataframe(df_klm, use_container_width=True)
-
-            st.divider()
-            st.markdown("### ⚠️ Varningar (Hundar med 0 poäng)")
-            nollor = df_klm[(df_klm['Vatten (Indata)'] == 0) | (df_klm['Spår (Indata)'] == 0)]
-            
-            if not nollor.empty:
-                st.warning(f"Hittade {len(nollor)} starter med 0 poäng. Kontrollera att dessa stämmer:")
-                st.dataframe(nollor)
-            else:
-                st.success("Inga nollor hittades i poängkolumnerna.")
-
+            with tab2:
+                st.dataframe(df_klm)
+                
+                st.markdown("### ⚠️ Varningar (0 poäng)")
+                nollor = df_klm[(df_klm['Vatten (Indata)'] == 0) | (df_klm['Spår (Indata)'] == 0)]
+                if not nollor.empty:
+                    st.warning(f"Dessa {len(nollor)} rader har 0 i poäng (kontrollera om det är rätt):")
+                    st.dataframe(nollor)
 else:
     st.info("Väntar på filuppladdning...")
