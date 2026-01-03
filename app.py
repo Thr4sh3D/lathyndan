@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import altair as alt  # <-- Nytt bibliotek för snyggare grafer
 
 # --- SID-INSTÄLLNINGAR ---
 st.set_page_config(page_title="KLM Statistik", page_icon="🐕", layout="wide")
@@ -17,10 +18,10 @@ if uploaded_file is not None:
     
     # --- FIX FÖR SVENSKA TECKEN (ÅÄÖ) ---
     try:
-        # 1. Vi testar utf-8-sig först. Det fixar både ÅÄÖ och de konstiga tecknen i början av filen.
+        # 1. Vi testar utf-8-sig först.
         text_data = content.decode("utf-8-sig")
     except:
-        # 2. Om det misslyckas, testa det äldre Windows-formatet (latin-1)
+        # 2. Fallback till latin-1
         text_data = content.decode("latin-1")
     
     lines = text_data.split('\n')
@@ -65,6 +66,7 @@ if uploaded_file is not None:
                     "Spår (Indata)": poang_spar,     # Kolumn 37
                     "Resultat": bedom_eftersok(poang_vatten, poang_spar),
                     "Ras": ras,
+                    # Lägger till kritik om den finns
                     "Kritik": f"Vatten: {parts[66]} Spår: {parts[67]}" if len(parts) > 67 else "" 
                 }
                 data.append(entry)
@@ -87,7 +89,37 @@ if uploaded_file is not None:
             
             st.divider()
             st.subheader("Resultatfördelning")
-            st.bar_chart(df_klm['Resultat'].value_counts())
+            
+            # --- NY GRAF KOD MED SIFFROR PÅ STAPLARNA ---
+            # Förbered data för grafen
+            chart_data = df_klm['Resultat'].value_counts().reset_index()
+            chart_data.columns = ['Resultat', 'Antal']
+            
+            # Skapa grafen
+            base = alt.Chart(chart_data).encode(
+                x=alt.X('Resultat', sort='-y', title="Resultat"),
+                y=alt.Y('Antal', title="Antal starter")
+            )
+
+            # Staplarna
+            bars = base.mark_bar().encode(
+                color=alt.value("#4c78a8") # Du kan byta färg här om du vill
+            )
+
+            # Texten (Siffrorna ovanpå)
+            text = base.mark_text(
+                align='center',
+                baseline='bottom',
+                dy=-5,  # Flyttar texten lite uppåt från stapeln
+                fontSize=14,
+                color='white'  # Färgen på siffran (ändra till 'black' om du har ljus bakgrund)
+            ).encode(
+                text='Antal'
+            )
+
+            # Rita ut allt
+            st.altair_chart(bars + text, use_container_width=True)
+            # ---------------------------------------------
 
             # Excel-export
             output = io.BytesIO()
