@@ -3,6 +3,3 @@ pandas
 openpyxl
 plotly
 xlsxwriter
-openai
-matplotlib
-pandasai
