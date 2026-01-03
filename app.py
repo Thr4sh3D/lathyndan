@@ -1,189 +1,244 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 import io
 
 # --- SID-INSTÄLLNINGAR ---
-st.set_page_config(page_title="KLM Provstatistik", page_icon="🐕", layout="wide")
+st.set_page_config(page_title="Jaktprovsstatistik", page_icon="🐕", layout="wide")
 
-st.title("📊 Statistikverktyg för Kleiner Münsterländer (2023-2024)")
-st.markdown("Ladda upp Excel-filen med flikarna **Eftersök** och **Jaktprov**.")
+st.title("📊 Jaktprovsstatistik & Analys")
+st.markdown("Analysera resultat från **Eftersök** och **Jaktprov/Fält**.")
 
-# --- 1. LADDA UPP EXCEL-FIL ---
-uploaded_file = st.sidebar.file_uploader("Ladda upp Excel (.xlsx)", type=["xlsx"])
+# --- 1. LADDA UPP FILER ---
+st.sidebar.header("📂 1. Ladda upp data")
+st.sidebar.markdown("Ladda upp Excel-filen (med flikar) ELLER separata CSV-filer.")
 
-# Funktion för att tvätta kolumnnamn (tar bort mellanslag på slutet etc)
-def clean_columns(df):
+uploaded_excel = st.sidebar.file_uploader("Excel-fil (.xlsx)", type=["xlsx"])
+uploaded_csv_e = st.sidebar.file_uploader("Eftersök (.csv)", type=["csv"])
+uploaded_csv_j = st.sidebar.file_uploader("Jaktprov (.csv)", type=["csv"])
+
+# Funktion för att ladda data robust
+@st.cache_data
+def load_data(excel_file, csv_e, csv_j):
+    df_e = pd.DataFrame()
+    df_j = pd.DataFrame()
+    
+    # Alternativ A: Excel
+    if excel_file:
+        try:
+            xls = pd.ExcelFile(excel_file)
+            # Leta efter flikar
+            sheet_e = next((s for s in xls.sheet_names if "eftersök" in s.lower()), None)
+            sheet_j = next((s for s in xls.sheet_names if "jakt" in s.lower() or "fält" in s.lower()), None)
+            
+            if sheet_e: df_e = pd.read_excel(xls, sheet_name=sheet_e)
+            if sheet_j: df_j = pd.read_excel(xls, sheet_name=sheet_j)
+        except Exception as e:
+            st.error(f"Fel vid inläsning av Excel: {e}")
+
+    # Alternativ B: CSV (Skriver över Excel om båda finns)
+    if csv_e:
+        try:
+            # Provar läsa med semikolon som är standard för SKK/Excel-CSV
+            df_e = pd.read_csv(csv_e, sep=';', encoding='latin1', on_bad_lines='skip')
+            if len(df_e.columns) < 2: # Om det misslyckades, testa komma
+                csv_e.seek(0)
+                df_e = pd.read_csv(csv_e, sep=',', encoding='utf-8', on_bad_lines='skip')
+        except:
+            st.warning("Kunde inte läsa Eftersöks-CSV. Kontrollera formatet.")
+
+    if csv_j:
+        try:
+            df_j = pd.read_csv(csv_j, sep=';', encoding='latin1', on_bad_lines='skip')
+            if len(df_j.columns) < 2:
+                csv_j.seek(0)
+                df_j = pd.read_csv(csv_j, sep=',', encoding='utf-8', on_bad_lines='skip')
+        except:
+            st.warning("Kunde inte läsa Jaktprovs-CSV.")
+
+    return df_e, df_j
+
+# Ladda datan
+df_eftersok_raw, df_jakt_raw = load_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j)
+
+# Kontroll om data finns
+if df_eftersok_raw.empty and df_jakt_raw.empty:
+    st.info("👈 Börja med att ladda upp filer i menyn till vänster.")
+    st.stop()
+
+# --- 2. TVÄTTA OCH FÖRBEREDA DATA ---
+def clean_df(df):
+    if df.empty: return df
+    # Ta bort mellanslag i kolumnnamn
     df.columns = df.columns.str.strip()
+    
+    # Hantera Datum
+    if 'Datum' in df.columns:
+        df['Datum'] = pd.to_datetime(df['Datum'], errors='coerce')
+        df['År'] = df['Datum'].dt.year
+    
+    # Hitta Raskolumn (ofta 'rasnamn' eller 'Ras')
+    ras_candidates = ['rasnamn', 'Ras', 'Hundras']
+    found_ras = next((c for c in ras_candidates if c in df.columns), None)
+    if found_ras:
+        df['Ras_Clean'] = df[found_ras]
+    else:
+        df['Ras_Clean'] = "Okänd"
+        
     return df
 
-if uploaded_file:
-    try:
-        # Läs in hela Excel-filen (alla flikar)
-        xls = pd.ExcelFile(uploaded_file)
-        sheet_names = xls.sheet_names
+df_e = clean_df(df_eftersok_raw)
+df_j = clean_df(df_jakt_raw)
+
+# --- 3. FILTER (SIDEBAR) ---
+st.sidebar.divider()
+st.sidebar.header("🔍 Filtrering")
+
+# Kombinera filterval från båda dataseten
+all_years = sorted(list(set(df_e.get('År', pd.Series()).dropna().astype(int)) | set(df_j.get('År', pd.Series()).dropna().astype(int))))
+all_races = sorted(list(set(df_e.get('Ras_Clean', pd.Series()).dropna().astype(str)) | set(df_j.get('Ras_Clean', pd.Series()).dropna().astype(str))))
+
+# A. Rasfilter
+valda_raser = st.sidebar.multiselect("Välj Ras(er)", all_races, default=all_races[:1] if all_races else None)
+
+# B. Årsfilter
+valda_ar = st.sidebar.multiselect("Välj År", all_years, default=all_years)
+
+# C. Sök på hund
+sok_hund = st.sidebar.text_input("Sök på Hundnamn eller Regnr", "")
+
+# --- 4. APPLICERA FILTER ---
+def filter_dataframe(df):
+    if df.empty: return df
+    temp = df.copy()
+    
+    # Ras
+    if valda_raser:
+        temp = temp[temp['Ras_Clean'].isin(valda_raser)]
+    
+    # År
+    if valda_ar and 'År' in temp.columns:
+        temp = temp[temp['År'].isin(valda_ar)]
         
-        # Försök hitta rätt flikar automatiskt
-        eftersok_sheet = next((s for s in sheet_names if "eftersök" in s.lower()), None)
-        falt_sheet = next((s for s in sheet_names if "jakt" in s.lower() or "fält" in s.lower()), None)
-
-        # --- DATAHANTERING ---
-        df_eftersok = pd.DataFrame()
-        df_falt = pd.DataFrame()
-
-        if eftersok_sheet:
-            df_eftersok = pd.read_excel(xls, sheet_name=eftersok_sheet)
-            df_eftersok = clean_columns(df_eftersok)
-            # Fixa datumformat
-            if 'Datum' in df_eftersok.columns:
-                df_eftersok['Datum'] = pd.to_datetime(df_eftersok['Datum'], errors='coerce')
-                df_eftersok['År'] = df_eftersok['Datum'].dt.year
+    # Text-sökning (Regnr eller Namn)
+    if sok_hund:
+        # Skapa en söksträng av alla kolumner
+        temp['search_col'] = temp.astype(str).agg(' '.join, axis=1).str.lower()
+        temp = temp[temp['search_col'].str.contains(sok_hund.lower())]
+        temp = temp.drop(columns=['search_col'])
         
-        if falt_sheet:
-            df_falt = pd.read_excel(xls, sheet_name=falt_sheet)
-            df_falt = clean_columns(df_falt)
-            if 'Datum' in df_falt.columns:
-                df_falt['Datum'] = pd.to_datetime(df_falt['Datum'], errors='coerce')
-                df_falt['År'] = df_falt['Datum'].dt.year
+    return temp
 
-        # Slå ihop allt för filter (för att hitta alla raser och år)
-        all_data = pd.concat([df_eftersok, df_falt], ignore_index=True)
+df_e_filt = filter_dataframe(df_e)
+df_j_filt = filter_dataframe(df_j)
+
+# --- 5. VISUALISERING (FLIKAR) ---
+tab1, tab2 = st.tabs(["🌲 Eftersök", "🌾 Jaktprov / Fält"])
+
+# === FLIK 1: EFTERSÖK ===
+with tab1:
+    if df_e_filt.empty:
+        st.warning("Ingen eftersöksdata hittades med valda filter.")
+    else:
+        # Försök hitta poängkolumner
+        col_vatten = next((c for c in df_e_filt.columns if "vatten" in c.lower() and "kritik" not in c.lower()), "Vatten")
+        col_spar = next((c for c in df_e_filt.columns if "spår" in c.lower() or "spar" in c.lower() and "kritik" not in c.lower()), "Spår")
+
+        # Gör om till siffror
+        for col in [col_vatten, col_spar]:
+            if col in df_e_filt.columns:
+                df_e_filt[col] = pd.to_numeric(df_e_filt[col], errors='coerce').fillna(0)
+
+        # KPI:er
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Antal Starter", len(df_e_filt))
+        c2.metric("Unika Hundar", df_e_filt['regnr'].nunique() if 'regnr' in df_e_filt.columns else 0)
         
-        # Hantera kolumnnamn för Ras (i din PDF heter den "rasnamn")
-        ras_col = 'rasnamn' if 'rasnamn' in all_data.columns else 'Ras'
-        if ras_col not in all_data.columns:
-            st.error(f"Hittar inte kolumnen för Ras. Heter den 'rasnamn' i Excel-filen?")
-            st.stop()
-
-        # --- 2. SIDEBAR FILTER (GLOBALTA) ---
-        st.sidebar.header("🔍 Filtrering")
-
-        # A. Välj Ras
-        alla_raser = sorted(all_data[ras_col].dropna().unique().astype(str))
-        default_ras = ["Kleiner Münsterländer"] if "Kleiner Münsterländer" in alla_raser else alla_raser[:1]
-        valda_raser = st.sidebar.multiselect("Välj Ras", alla_raser, default=default_ras)
-
-        # B. Välj År
-        if 'År' in all_data.columns:
-            alla_ar = sorted(all_data['År'].dropna().unique().astype(int))
-            valda_ar = st.sidebar.multiselect("Välj År", alla_ar, default=alla_ar)
-        else:
-            valda_ar = []
-
-        # C. Välj Klass
-        if 'Klass' in all_data.columns:
-            alla_klasser = sorted(all_data['Klass'].dropna().astype(str).unique())
-            valda_klasser = st.sidebar.multiselect("Välj Klass", alla_klasser, default=alla_klasser)
-        else:
-            valda_klasser = []
-
-        # --- 3. FILTRERA DATAN ---
-        def filter_data(df):
-            if df.empty: return df
-            temp_df = df.copy()
-            # Filtrera Ras
-            if valda_raser:
-                temp_df = temp_df[temp_df[ras_col].isin(valda_raser)]
-            # Filtrera År
-            if valda_ar and 'År' in temp_df.columns:
-                temp_df = temp_df[temp_df['År'].isin(valda_ar)]
-            # Filtrera Klass
-            if valda_klasser and 'Klass' in temp_df.columns:
-                temp_df = temp_df[temp_df['Klass'].astype(str).isin(valda_klasser)]
-            return temp_df
-
-        df_e_filtered = filter_data(df_eftersok)
-        df_f_filtered = filter_data(df_falt)
-
-        # --- 4. VISA RESULTAT (FLIKAR) ---
-        tab1, tab2 = st.tabs(["🌲 Eftersök (Vatten/Spår)", "🌾 Fältprov"])
-
-        # === FLIK 1: EFTERSÖK ===
-        with tab1:
-            if df_e_filtered.empty:
-                st.info("Ingen eftersöksdata hittades för detta urval.")
-            else:
-                st.subheader(f"Statistik Eftersök ({len(df_e_filtered)} starter)")
-                
-                # Identifiera kolumner för poäng (Spår/Vatten)
-                # I din PDF heter de "Vatten" och "Spar" (eller Spår)
-                vatten_col = 'Vatten'
-                spar_col = 'Spår' if 'Spår' in df_e_filtered.columns else 'Spar'
-
-                # Validera att kolumnerna finns
-                if vatten_col in df_e_filtered.columns and spar_col in df_e_filtered.columns:
-                    # RÄKNA GODKÄNDA (Minst 4 i båda grenar)
-                    # Se till att det är siffror
-                    df_e_filtered[vatten_col] = pd.to_numeric(df_e_filtered[vatten_col], errors='coerce').fillna(0)
-                    df_e_filtered[spar_col] = pd.to_numeric(df_e_filtered[spar_col], errors='coerce').fillna(0)
-
-                    godkanda = df_e_filtered[
-                        (df_e_filtered[vatten_col] >= 4) & 
-                        (df_e_filtered[spar_col] >= 4)
-                    ]
-                    
-                    full_pott = df_e_filtered[
-                        (df_e_filtered[vatten_col] == 10) & 
-                        (df_e_filtered[spar_col] == 10)
-                    ]
-
-                    # KPI-KPI:er
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Antal Starter", len(df_e_filtered))
-                    c2.metric("Unika Hundar", df_e_filtered['regnr'].nunique() if 'regnr' in df_e_filtered else 0)
-                    c3.metric("Godkända", f"{len(godkanda)} st ({round(len(godkanda)/len(df_e_filtered)*100)}%)")
-                    c4.metric("10-10 (Full pott)", len(full_pott))
-
-                    st.divider()
-
-                    # Detaljlista
-                    st.markdown("#### Detaljerad lista")
-                    visnings_cols = ['Datum', 'Klass', 'regnr', 'namn', vatten_col, spar_col]
-                    # Filtrera så vi bara visar kolumner som faktiskt finns
-                    visnings_cols = [c for c in visnings_cols if c in df_e_filtered.columns]
-                    
-                    st.dataframe(df_e_filtered[visnings_cols].sort_values('Datum', ascending=False), use_container_width=True)
-                else:
-                    st.warning(f"Kunde inte hitta poängkolumnerna 'Vatten' och '{spar_col}'. Kontrollera Excel-filen.")
-                    st.write("Hittade kolumner:", df_e_filtered.columns.tolist())
-
-        # === FLIK 2: FÄLTPROV ===
-        with tab2:
-            if df_f_filtered.empty:
-                st.info("Ingen fältprovsdata hittades för detta urval (eller så heter fliken något annat än 'Jakt'/'Fält').")
-            else:
-                st.subheader(f"Statistik Fält ({len(df_f_filtered)} starter)")
-                
-                # Här visar vi bara rådata först eftersom jag inte vet exakta kolumnnamn för fältbetyg än
-                st.dataframe(df_f_filtered, use_container_width=True)
-                
-                st.info("Tips: Om du vill ha specifik statistik för fält (t.ex. antal 1:a pris), berätta vad kolumnen heter som innehåller priset/poängen!")
-
-        # --- EXPORT ---
+        # Räkna Godkända (Krav: Minst 4 på både vatten och spår)
+        if col_vatten in df_e_filt.columns and col_spar in df_e_filt.columns:
+            godkanda = df_e_filt[(df_e_filt[col_vatten] >= 4) & (df_e_filt[col_spar] >= 4)]
+            full_pott = df_e_filt[(df_e_filt[col_vatten] == 10) & (df_e_filt[col_spar] == 10)]
+            
+            c3.metric("Godkända", f"{len(godkanda)} ({round(len(godkanda)/len(df_e_filt)*100)}%)")
+            c4.metric("10-10 (Full pott)", len(full_pott))
+        
         st.divider()
-        st.subheader("📥 Ladda ner urval")
+
+        # DIAGRAM
+        col_chart1, col_chart2 = st.columns(2)
         
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            if not df_e_filtered.empty:
-                df_e_filtered.to_excel(writer, index=False, sheet_name='Eftersök Urval')
-            if not df_f_filtered.empty:
-                df_f_filtered.to_excel(writer, index=False, sheet_name='Fält Urval')
-        
-        st.download_button(
-            label="Ladda ner Excel-fil med detta urval",
-            data=output.getvalue(),
-            file_name="KLM_Statistik_Urval.xlsx",
-            mime="application/vnd.ms-excel"
+        with col_chart1:
+            st.markdown("### Vattenbetyg")
+            if col_vatten in df_e_filt.columns:
+                fig_vatten = px.histogram(df_e_filt, x=col_vatten, nbins=11, 
+                                          title="Fördelning Vattenbetyg",
+                                          labels={col_vatten: "Betyg"},
+                                          color_discrete_sequence=['#3366CC'])
+                fig_vatten.update_layout(bargap=0.2)
+                st.plotly_chart(fig_vatten, use_container_width=True)
+
+        with col_chart2:
+            st.markdown("### Spårbetyg")
+            if col_spar in df_e_filt.columns:
+                fig_spar = px.histogram(df_e_filt, x=col_spar, nbins=11, 
+                                        title="Fördelning Spårbetyg",
+                                        labels={col_spar: "Betyg"},
+                                        color_discrete_sequence=['#109618'])
+                fig_spar.update_layout(bargap=0.2)
+                st.plotly_chart(fig_spar, use_container_width=True)
+
+        # TABELL
+        st.markdown("### 📋 Resultatlista")
+        st.dataframe(
+            df_e_filt.sort_values('Datum', ascending=False),
+            use_container_width=True,
+            hide_index=True
         )
 
-    except Exception as e:
-        st.error(f"Ett fel uppstod vid inläsning av filen: {e}")
-        st.markdown("### Felsökning tips:")
-        st.markdown("""
-        1. Kontrollera att filen är en **.xlsx** (inte gammal .xls).
-        2. Heter flikarna ungefär "Eftersök" och "Jaktprov/Fält"?
-        3. Heter kolumnen för ras **rasnamn**?
-        """)
+# === FLIK 2: JAKTPROV ===
+with tab2:
+    if df_j_filt.empty:
+        st.warning("Ingen jaktprovsdata hittades med valda filter.")
+    else:
+        # KPI:er
+        c1, c2 = st.columns(2)
+        c1.metric("Antal Starter (Fält)", len(df_j_filt))
+        c2.metric("Unika Hundar", df_j_filt['regnr'].nunique() if 'regnr' in df_j_filt.columns else 0)
+        
+        st.divider()
+        
+        # Försök hitta Pris-kolumn (ofta 'Pris', 'Premie' eller liknande)
+        pris_col = next((c for c in df_j_filt.columns if "pris" in c.lower()), None)
+        
+        if pris_col:
+            st.markdown("### Prisfördelning")
+            # Räkna antal av varje pris
+            pris_counts = df_j_filt[pris_col].value_counts().reset_index()
+            pris_counts.columns = ['Pris', 'Antal']
+            
+            fig_pris = px.pie(pris_counts, values='Antal', names='Pris', 
+                              title="Fördelning av Priser",
+                              hole=0.4)
+            st.plotly_chart(fig_pris, use_container_width=True)
+        
+        # TABELL
+        st.markdown("### 📋 Resultatlista Fält")
+        st.dataframe(
+            df_j_filt.sort_values('Datum', ascending=False) if 'Datum' in df_j_filt.columns else df_j_filt,
+            use_container_width=True,
+            hide_index=True
+        )
 
-else:
-    st.info("👈 Börja med att ladda upp din Excel-fil i menyn till vänster.")
+# --- EXPORT ---
+st.divider()
+output = io.BytesIO()
+with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    if not df_e_filt.empty: df_e_filt.to_excel(writer, index=False, sheet_name='Eftersök Urval')
+    if not df_j_filt.empty: df_j_filt.to_excel(writer, index=False, sheet_name='Jaktprov Urval')
+
+st.download_button(
+    "📥 Ladda ner urvalet till Excel",
+    data=output.getvalue(),
+    file_name="Jaktprovsstatistik_Urval.xlsx",
+    mime="application/vnd.ms-excel"
+)
