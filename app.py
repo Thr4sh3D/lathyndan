@@ -3,23 +3,17 @@ import pandas as pd
 import plotly.express as px
 import io
 import re
-from pandasai import SmartDataframe
-from pandasai.llm import OpenAI
 
 # --- SID-INSTÄLLNINGAR ---
-st.set_page_config(page_title="KLM Statistik & AI", page_icon="🐕", layout="wide")
+st.set_page_config(page_title="KLM Statistik", page_icon="🐕", layout="wide")
 
 st.title("📊 KLM Statistik & Analys")
 st.markdown("Analysera resultat från **Eftersök** och **Jaktprov/Fält**.")
 
-# --- 1. API-NYCKEL FÖR AI (SIDEBAR) ---
-st.sidebar.header("🤖 AI-Inställningar")
-api_key = st.sidebar.text_input("OpenAI API Key (valfritt)", type="password", help="Krävs för att använda AI-assistenten i fliken.")
-st.sidebar.markdown("[Skaffa API-nyckel här](https://platform.openai.com/api-keys)")
-
-# --- 2. LADDA UPP FILER ---
+# --- 1. LADDA UPP FILER ---
 st.sidebar.header("📂 Ladda upp data")
 st.sidebar.info("Appen klarar Excel, CSV och gamla Textfiler.")
+
 uploaded_excel = st.sidebar.file_uploader("Excel-fil (.xlsx)", type=["xlsx"])
 uploaded_csv_e = st.sidebar.file_uploader("Eftersök (.csv)", type=["csv"])
 uploaded_csv_j = st.sidebar.file_uploader("Jaktprov (.csv)", type=["csv"])
@@ -54,7 +48,7 @@ def parse_txt_to_df(txt_file):
                 except: continue
     return pd.DataFrame(data)
 
-# --- 3. LADDA OCH SLÅ IHOP DATA ---
+# --- 2. LADDA OCH SLÅ IHOP DATA ---
 @st.cache_data
 def load_all_data(excel, csv_e, csv_j, txt):
     df_e_list = []
@@ -95,7 +89,7 @@ def load_all_data(excel, csv_e, csv_j, txt):
 
 df_e_raw, df_j_raw = load_all_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j, uploaded_txt)
 
-# --- 4. TVÄTTA DATA ---
+# --- 3. TVÄTTA DATA ---
 def clean_df(df):
     if df.empty: return df
     df.columns = df.columns.str.strip()
@@ -123,7 +117,7 @@ def clean_df(df):
 df_e = clean_df(df_e_raw)
 df_j = clean_df(df_j_raw)
 
-# --- 5. FILTER ---
+# --- 4. FILTER ---
 st.sidebar.divider()
 st.sidebar.header("🔍 Filter")
 
@@ -146,8 +140,8 @@ def apply_filter(df):
 df_e_filt = apply_filter(df_e)
 df_j_filt = apply_filter(df_j)
 
-# --- 6. FLIKAR ---
-tab1, tab2, tab3, tab4 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🤖 AI-Assistent", "❓ Hjälp & Guide"])
+# --- 5. VISNING (FLIKAR) ---
+tab1, tab2, tab3 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "❓ Hjälp & Guide"])
 
 # === FLIK 1: EFTERSÖK ===
 with tab1:
@@ -187,30 +181,8 @@ with tab2:
         st.dataframe(df_j_filt, use_container_width=True, hide_index=True)
     else: st.info("Ingen fältprovsdata hittades.")
 
-# === FLIK 3: AI ASSISTENT ===
+# === FLIK 3: HJÄLP & GUIDE ===
 with tab3:
-    st.subheader("🤖 Prata med statistiken")
-    if not api_key:
-        st.warning("⚠️ Du måste ange en API-nyckel i vänstermenyn för att aktivera AI:n.")
-    else:
-        dataset_val = st.radio("Vilken data vill du fråga?", ["Eftersök", "Fältprov"], horizontal=True)
-        target_df = df_e_filt if dataset_val == "Eftersök" else df_j_filt
-        
-        if target_df.empty:
-            st.error("Ingen data att analysera.")
-        else:
-            llm = OpenAI(api_token=api_key)
-            sdf = SmartDataframe(target_df, config={"llm": llm})
-            fraga = st.text_area("Ställ din fråga:", placeholder="T.ex: Vilken hund har bäst snitt på spår?")
-            if st.button("Skicka") and fraga:
-                with st.spinner("Tänker..."):
-                    try:
-                        st.write(sdf.chat(fraga))
-                    except Exception as e:
-                        st.error(f"Ett fel uppstod: {e}")
-
-# === FLIK 4: HJÄLP & GUIDE ===
-with tab4:
     st.markdown("## 📘 Användarguide")
     st.markdown("""
     **1. Hämta dina filer**
@@ -227,7 +199,7 @@ with tab4:
     **Flikarna:**
     * **🌲 Eftersök:** Statistik för Vatten och Spår. Här ser du automatiskt antal Godkända och "Full pott" (10-10).
     * **🌾 Fältprov:** Statistik för jaktprov/fält.
-    * **🤖 AI:** (Överkurs) Här kan du chatta med datan om du har en API-nyckel.
+    * **❓ Hjälp:** Denna guide.
     """)
 
 # --- EXPORT ---
