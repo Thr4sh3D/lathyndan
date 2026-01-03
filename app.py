@@ -157,9 +157,29 @@ with tab1:
             c4.metric("10-10", len(full))
             
             st.divider()
+            
+            # --- FIXADE DIAGRAM (STAPELDIAGRAM) ---
             cc1, cc2 = st.columns(2)
-            with cc1: st.plotly_chart(px.histogram(df_e_filt, x='Vatten_Final', nbins=11, title="Vattenbetyg", color_discrete_sequence=['#3366CC']), use_container_width=True)
-            with cc2: st.plotly_chart(px.histogram(df_e_filt, x='Spår_Final', nbins=11, title="Spårbetyg", color_discrete_sequence=['#109618']), use_container_width=True)
+            
+            with cc1: 
+                # Räkna antal av varje betyg
+                v_counts = df_e_filt['Vatten_Final'].value_counts().sort_index()
+                fig_v = px.bar(x=v_counts.index, y=v_counts.values, 
+                               labels={'x': 'Betyg', 'y': 'Antal hundar'}, 
+                               title="Vattenbetyg", 
+                               color_discrete_sequence=['#3366CC'])
+                # Tvinga x-axeln att visa varje siffra
+                fig_v.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+                st.plotly_chart(fig_v, use_container_width=True)
+
+            with cc2: 
+                s_counts = df_e_filt['Spår_Final'].value_counts().sort_index()
+                fig_s = px.bar(x=s_counts.index, y=s_counts.values, 
+                               labels={'x': 'Betyg', 'y': 'Antal hundar'}, 
+                               title="Spårbetyg", 
+                               color_discrete_sequence=['#109618'])
+                fig_s.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+                st.plotly_chart(fig_s, use_container_width=True)
             
         st.dataframe(df_e_filt, use_container_width=True, hide_index=True)
     else: st.info("Ingen eftersöksdata hittades.")
