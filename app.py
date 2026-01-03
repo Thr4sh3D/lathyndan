@@ -14,10 +14,14 @@ uploaded_file = st.file_uploader("Välj textfil", type=["txt", "csv"])
 if uploaded_file is not None:
     # Läs in filen
     content = uploaded_file.getvalue()
+    
+    # --- FIX FÖR SVENSKA TECKEN (ÅÄÖ) ---
     try:
-        text_data = content.decode("latin-1")
+        # 1. Vi testar utf-8-sig först. Det fixar både ÅÄÖ och de konstiga tecknen i början av filen.
+        text_data = content.decode("utf-8-sig")
     except:
-        text_data = content.decode("utf-8", errors="ignore")
+        # 2. Om det misslyckas, testa det äldre Windows-formatet (latin-1)
+        text_data = content.decode("latin-1")
     
     lines = text_data.split('\n')
     data = []
@@ -34,15 +38,14 @@ if uploaded_file is not None:
     for line in lines:
         parts = line.split('\t')
         
-        # Vi behöver rader som är tillräckligt långa (minst 40 kolumner för att vara säkra)
+        # Vi behöver rader som är tillräckligt långa
         if len(parts) > 40:
-            # Kolumn 4 är Rasen
             ras = parts[4].strip()
             
             # FILTER: VI SPARAR BARA KLEINER MÜNSTERLÄNDER
             if "Kleiner" in ras or "Münsterländer" in ras or "kleiner" in ras: 
                 try:
-                    # HÄR ÄR ÄNDRINGEN: VI LÄSER KOLUMN 36 OCH 37
+                    # Vi läser kolumn 36 (Vatten) och 37 (Spår)
                     raw_vatten = parts[36].strip()
                     raw_spar = parts[37].strip()
                     
@@ -58,10 +61,11 @@ if uploaded_file is not None:
                     "Klass": parts[1],      
                     "Hund": parts[2],       
                     "Regnr": parts[3],      
-                    "Vatten (Indata)": poang_vatten, # Nu kolumn 36
-                    "Spår (Indata)": poang_spar,     # Nu kolumn 37
+                    "Vatten (Indata)": poang_vatten, # Kolumn 36
+                    "Spår (Indata)": poang_spar,     # Kolumn 37
                     "Resultat": bedom_eftersok(poang_vatten, poang_spar),
-                    "Ras": ras
+                    "Ras": ras,
+                    "Kritik": f"Vatten: {parts[66]} Spår: {parts[67]}" if len(parts) > 67 else "" 
                 }
                 data.append(entry)
 
@@ -93,6 +97,7 @@ if uploaded_file is not None:
             st.download_button("📥 Ladda ner Excel", output.getvalue(), "KLM_Statistik_2025.xlsx", "application/vnd.ms-excel")
 
         with tab2:
+            st.markdown("### 🕵️‍♀️ Validering")
             st.dataframe(df_klm)
             
             # Varningar för 0:or
