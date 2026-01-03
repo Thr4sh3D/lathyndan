@@ -7,9 +7,9 @@ from pandasai import SmartDataframe
 from pandasai.llm import OpenAI
 
 # --- SID-INSTÄLLNINGAR ---
-st.set_page_config(page_title="Jaktprovsstatistik & AI", page_icon="🐕", layout="wide")
+st.set_page_config(page_title="KLM Statistik & AI", page_icon="🐕", layout="wide")
 
-st.title("📊 Jaktprovsstatistik & AI-Assistent")
+st.title("📊 KLM Statistik & Analys")
 st.markdown("Analysera resultat från **Eftersök** och **Jaktprov/Fält**.")
 
 # --- 1. API-NYCKEL FÖR AI (SIDEBAR) ---
@@ -19,6 +19,7 @@ st.sidebar.markdown("[Skaffa API-nyckel här](https://platform.openai.com/api-ke
 
 # --- 2. LADDA UPP FILER ---
 st.sidebar.header("📂 Ladda upp data")
+st.sidebar.info("Appen klarar Excel, CSV och gamla Textfiler.")
 uploaded_excel = st.sidebar.file_uploader("Excel-fil (.xlsx)", type=["xlsx"])
 uploaded_csv_e = st.sidebar.file_uploader("Eftersök (.csv)", type=["csv"])
 uploaded_csv_j = st.sidebar.file_uploader("Jaktprov (.csv)", type=["csv"])
@@ -94,10 +95,6 @@ def load_all_data(excel, csv_e, csv_j, txt):
 
 df_e_raw, df_j_raw = load_all_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j, uploaded_txt)
 
-if df_e_raw.empty and df_j_raw.empty:
-    st.info("👈 Ladda upp data för att starta.")
-    st.stop()
-
 # --- 4. TVÄTTA DATA ---
 def clean_df(df):
     if df.empty: return df
@@ -112,7 +109,7 @@ def clean_df(df):
         found_ras = next((c for c in ras_candidates if c in df.columns), None)
         df['Ras_Clean'] = df[found_ras] if found_ras else "Okänd"
     
-    # Poäng (om de inte redan heter _Final från TXT)
+    # Poäng
     if 'Vatten_Final' not in df.columns:
         col_v = next((c for c in df.columns if "vatten" in c.lower() and "kritik" not in c.lower()), None)
         if col_v: df['Vatten_Final'] = pd.to_numeric(df[col_v], errors='coerce').fillna(0)
@@ -129,11 +126,15 @@ df_j = clean_df(df_j_raw)
 # --- 5. FILTER ---
 st.sidebar.divider()
 st.sidebar.header("🔍 Filter")
-all_years = sorted(list(set(df_e.get('År', pd.Series()).dropna().astype(int)) | set(df_j.get('År', pd.Series()).dropna().astype(int))))
-all_races = sorted(list(set(df_e.get('Ras_Clean', pd.Series()).dropna().astype(str)) | set(df_j.get('Ras_Clean', pd.Series()).dropna().astype(str))))
 
-valda_raser = st.sidebar.multiselect("Ras", all_races, default=all_races[:1] if all_races else None)
-valda_ar = st.sidebar.multiselect("År", all_years, default=all_years)
+if df_e.empty and df_j.empty:
+    st.info("👈 Börja med att ladda upp en fil i menyn.")
+else:
+    all_years = sorted(list(set(df_e.get('År', pd.Series()).dropna().astype(int)) | set(df_j.get('År', pd.Series()).dropna().astype(int))))
+    all_races = sorted(list(set(df_e.get('Ras_Clean', pd.Series()).dropna().astype(str)) | set(df_j.get('Ras_Clean', pd.Series()).dropna().astype(str))))
+
+    valda_raser = st.sidebar.multiselect("Ras", all_races, default=all_races[:1] if all_races else None)
+    valda_ar = st.sidebar.multiselect("År", all_years, default=all_years)
 
 def apply_filter(df):
     if df.empty: return df
@@ -146,65 +147,88 @@ df_e_filt = apply_filter(df_e)
 df_j_filt = apply_filter(df_j)
 
 # --- 6. FLIKAR ---
-tab1, tab2, tab3 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🤖 AI-Assistent"])
+tab1, tab2, tab3, tab4 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🤖 AI-Assistent", "❓ Hjälp & Guide"])
 
 # === FLIK 1: EFTERSÖK ===
 with tab1:
     if not df_e_filt.empty:
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Starter", len(df_e_filt))
+        c2.metric("Unika Hundar", df_e_filt['regnr'].nunique() if 'regnr' in df_e_filt.columns else 0)
         
         if 'Vatten_Final' in df_e_filt.columns and 'Spår_Final' in df_e_filt.columns:
             godkanda = df_e_filt[(df_e_filt['Vatten_Final'] >= 4) & (df_e_filt['Spår_Final'] >= 4)]
             full = df_e_filt[(df_e_filt['Vatten_Final'] == 10) & (df_e_filt['Spår_Final'] == 10)]
-            c2.metric("Godkända", len(godkanda))
-            c3.metric("10-10", len(full))
+            c3.metric("Godkända", f"{len(godkanda)} ({int(len(godkanda)/len(df_e_filt)*100)}%)")
+            c4.metric("10-10", len(full))
             
+            st.divider()
             cc1, cc2 = st.columns(2)
-            with cc1: st.plotly_chart(px.histogram(df_e_filt, x='Vatten_Final', nbins=11, title="Vatten", color_discrete_sequence=['#3366CC']), use_container_width=True)
-            with cc2: st.plotly_chart(px.histogram(df_e_filt, x='Spår_Final', nbins=11, title="Spår", color_discrete_sequence=['#109618']), use_container_width=True)
+            with cc1: st.plotly_chart(px.histogram(df_e_filt, x='Vatten_Final', nbins=11, title="Vattenbetyg", color_discrete_sequence=['#3366CC']), use_container_width=True)
+            with cc2: st.plotly_chart(px.histogram(df_e_filt, x='Spår_Final', nbins=11, title="Spårbetyg", color_discrete_sequence=['#109618']), use_container_width=True)
             
         st.dataframe(df_e_filt, use_container_width=True, hide_index=True)
-    else: st.info("Ingen data.")
+    else: st.info("Ingen eftersöksdata hittades.")
 
 # === FLIK 2: FÄLT ===
 with tab2:
     if not df_j_filt.empty:
-        st.metric("Starter", len(df_j_filt))
+        c1, c2 = st.columns(2)
+        c1.metric("Starter", len(df_j_filt))
+        c2.metric("Unika Hundar", df_j_filt['regnr'].nunique() if 'regnr' in df_j_filt.columns else 0)
+        
+        st.divider()
+        pris_col = next((c for c in df_j_filt.columns if "pris" in c.lower()), None)
+        if pris_col:
+            pc = df_j_filt[pris_col].value_counts().reset_index()
+            pc.columns = ['Pris', 'Antal']
+            st.plotly_chart(px.pie(pc, values='Antal', names='Pris', title="Prisfördelning", hole=0.4), use_container_width=True)
+            
         st.dataframe(df_j_filt, use_container_width=True, hide_index=True)
-    else: st.info("Ingen data.")
+    else: st.info("Ingen fältprovsdata hittades.")
 
 # === FLIK 3: AI ASSISTENT ===
 with tab3:
-    st.subheader("🤖 Prata med din statistik")
-    st.markdown("Här kan du ställa frågor direkt till datan. **OBS:** Kräver en OpenAI API-nyckel i menyn till vänster.")
-
+    st.subheader("🤖 Prata med statistiken")
     if not api_key:
         st.warning("⚠️ Du måste ange en API-nyckel i vänstermenyn för att aktivera AI:n.")
     else:
-        # Välj vilken data vi ska fråga
-        dataset_val = st.radio("Vilken data vill du analysera?", ["Eftersök", "Fältprov"], horizontal=True)
-        
+        dataset_val = st.radio("Vilken data vill du fråga?", ["Eftersök", "Fältprov"], horizontal=True)
         target_df = df_e_filt if dataset_val == "Eftersök" else df_j_filt
         
         if target_df.empty:
-            st.error("Det finns ingen data i det valda urvalet att analysera.")
+            st.error("Ingen data att analysera.")
         else:
-            # Initiera AI
             llm = OpenAI(api_token=api_key)
             sdf = SmartDataframe(target_df, config={"llm": llm})
-
-            # Chattruta
-            fraga = st.text_area("Vad vill du veta?", placeholder="T.ex: Vilken hund har bäst snittbetyg på vatten? Eller: Visa ett diagram över resultaten.")
-            
-            if st.button("Skicka fråga"):
-                with st.spinner("AI:n tänker..."):
+            fraga = st.text_area("Ställ din fråga:", placeholder="T.ex: Vilken hund har bäst snitt på spår?")
+            if st.button("Skicka") and fraga:
+                with st.spinner("Tänker..."):
                     try:
-                        svar = sdf.chat(fraga)
-                        st.success("Här är svaret:")
-                        st.write(svar)
+                        st.write(sdf.chat(fraga))
                     except Exception as e:
-                        st.error(f"Kunde inte tolka frågan: {e}")
+                        st.error(f"Ett fel uppstod: {e}")
+
+# === FLIK 4: HJÄLP & GUIDE ===
+with tab4:
+    st.markdown("## 📘 Användarguide")
+    st.markdown("""
+    **1. Hämta dina filer**
+    Ladda ner resultaten från SKK eller din vanliga källa. Appen klarar Excel (.xlsx), CSV (.csv) och Textfiler (.txt).
+    
+    **2. Ladda upp**
+    Använd knapparna i menyn till vänster. Appen slår automatiskt ihop filerna om du laddar upp flera.
+    
+    **3. Filtrera**
+    I menyn kan du välja:
+    * **Ras:** Förvald på Kleiner Münsterländer (men du kan välja alla).
+    * **År:** Välj vilka år du vill analysera.
+    
+    **Flikarna:**
+    * **🌲 Eftersök:** Statistik för Vatten och Spår. Här ser du automatiskt antal Godkända och "Full pott" (10-10).
+    * **🌾 Fältprov:** Statistik för jaktprov/fält.
+    * **🤖 AI:** (Överkurs) Här kan du chatta med datan om du har en API-nyckel.
+    """)
 
 # --- EXPORT ---
 st.divider()
