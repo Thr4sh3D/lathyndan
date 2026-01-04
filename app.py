@@ -143,11 +143,18 @@ def apply_filter(df):
 df_e_filt = apply_filter(df_e)
 df_j_filt = apply_filter(df_j)
 
-# --- FUNKTION FÖR ATT SNYGGA TILL TABELLER (VORSTEH-LINGO) ---
+# --- FUNKTION FÖR ATT SNYGGA TILL TABELLER (SÄKER VERSION) ---
 def prepare_display_table(df, is_field=False):
     visning = df.copy()
+    
+    # 1. Hantera Datum: Prioritera den snygga textsträngen
+    if 'Datum_Str' in visning.columns:
+        if 'Datum' in visning.columns:
+            visning = visning.drop(columns=['Datum']) # Kasta det gamla datumobjektet
+        visning = visning.rename(columns={'Datum_Str': 'Datum'}) # Byt namn på det snygga till "Datum"
+
+    # 2. Byt namn på övriga kolumner (mappning)
     rename_map = {
-        'Datum_Str': 'Datum',
         'regnr': 'Reg.nr',
         'Hund': 'Hundnamn',
         'namn': 'Hundnamn',
@@ -156,11 +163,18 @@ def prepare_display_table(df, is_field=False):
         'Ras_Clean': 'Ras',
         'Kritik': 'Domarberättelse'
     }
+    
     if is_field:
         pris_col = next((c for c in df.columns if "pris" in c.lower()), None)
         if pris_col: rename_map[pris_col] = 'Pris'
     
+    # 3. Utför namnbytet
     visning = visning.rename(columns=rename_map)
+    
+    # 4. Sista säkerhetskoll: Ta bort dubbletter om de ändå uppstått
+    visning = visning.loc[:, ~visning.columns.duplicated()]
+
+    # 5. Välj kolumner att visa
     priority_cols = ['Datum', 'Reg.nr', 'Hundnamn', 'Ras', 'Klass']
     
     if not is_field:
@@ -171,6 +185,7 @@ def prepare_display_table(df, is_field=False):
     if 'Domarberättelse' in visning.columns:
         priority_cols += ['Domarberättelse']
     
+    # Filtrera
     final_cols = [c for c in priority_cols if c in visning.columns]
     return visning[final_cols]
 
