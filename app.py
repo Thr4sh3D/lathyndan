@@ -5,27 +5,25 @@ import io
 import re
 
 # --- SID-INSTÄLLNINGAR ---
-st.set_page_config(page_title="KLM Statistik", page_icon="🐕", layout="wide")
+st.set_page_config(page_title="KLM Statistik & Rapport", page_icon="🐕", layout="wide")
 
-st.title("📊 KLM Statistik & Analys")
-st.markdown("Analysera resultat från **Eftersök** och **Jaktprov/Fält**.")
+st.title("📊 KLM Statistik för Verksamhetsberättelse")
+st.markdown("Generera underlag för **Eftersök** och **Jaktprov/Fält** uppdelat på klasser.")
 
 # --- 1. LADDA UPP FILER ---
-st.sidebar.header("📂 Ladda upp data")
-st.sidebar.info("Appen klarar Excel, CSV och gamla Textfiler.")
+st.sidebar.header("📂 1. Ladda upp data")
+st.sidebar.info("Excel, CSV eller Textfiler.")
 
 uploaded_excel = st.sidebar.file_uploader("Excel-fil (.xlsx)", type=["xlsx"])
 uploaded_csv_e = st.sidebar.file_uploader("Eftersök (.csv)", type=["csv"])
 uploaded_csv_j = st.sidebar.file_uploader("Jaktprov (.csv)", type=["csv"])
 uploaded_txt   = st.sidebar.file_uploader("Textfil SKK (.txt)", type=["txt"])
 
-# --- HJÄLPFUNKTION: TOLKA TEXTFIL ---
+# --- HJÄLPFUNKTIONER (PARSING) ---
 def parse_txt_to_df(txt_file):
     content = txt_file.getvalue()
-    try:
-        text_data = content.decode("latin-1")
-    except:
-        text_data = content.decode("utf-8", errors="ignore")
+    try: text_data = content.decode("latin-1")
+    except: text_data = content.decode("utf-8", errors="ignore")
     
     lines = text_data.split('\n')
     data = []
@@ -36,7 +34,7 @@ def parse_txt_to_df(txt_file):
                 try:
                     entry = {
                         "Datum": parts[0],
-                        "Klass": parts[1],
+                        "Klass": parts[1].strip(),
                         "Hund": parts[2],
                         "regnr": parts[3],
                         "Ras_Clean": parts[4].strip(),
@@ -48,7 +46,6 @@ def parse_txt_to_df(txt_file):
                 except: continue
     return pd.DataFrame(data)
 
-# --- 2. LADDA OCH SLÅ IHOP DATA ---
 @st.cache_data
 def load_all_data(excel, csv_e, csv_j, txt):
     df_e_list = []
@@ -89,13 +86,19 @@ def load_all_data(excel, csv_e, csv_j, txt):
 
 df_e_raw, df_j_raw = load_all_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j, uploaded_txt)
 
-# --- 3. TVÄTTA DATA ---
+# --- DATATVÄTT ---
 def clean_df(df):
     if df.empty: return df
     df.columns = df.columns.str.strip()
+    
+    # Datum & År
     if 'Datum' in df.columns:
         df['Datum'] = pd.to_datetime(df['Datum'], errors='coerce')
         df['År'] = df['Datum'].dt.year
+
+    # Klass (Standardisera så UKL och Ukl blir samma)
+    if 'Klass' in df.columns:
+        df['Klass'] = df['Klass'].astype(str).str.upper().str.strip()
     
     # Ras
     if 'Ras_Clean' not in df.columns:
@@ -103,11 +106,10 @@ def clean_df(df):
         found_ras = next((c for c in ras_candidates if c in df.columns), None)
         df['Ras_Clean'] = df[found_ras] if found_ras else "Okänd"
     
-    # Poäng
+    # Poäng Eftersök
     if 'Vatten_Final' not in df.columns:
         col_v = next((c for c in df.columns if "vatten" in c.lower() and "kritik" not in c.lower()), None)
         if col_v: df['Vatten_Final'] = pd.to_numeric(df[col_v], errors='coerce').fillna(0)
-    
     if 'Spår_Final' not in df.columns:
         col_s = next((c for c in df.columns if ("spår" in c.lower() or "spar" in c.lower()) and "kritik" not in c.lower()), None)
         if col_s: df['Spår_Final'] = pd.to_numeric(df[col_s], errors='coerce').fillna(0)
@@ -117,115 +119,138 @@ def clean_df(df):
 df_e = clean_df(df_e_raw)
 df_j = clean_df(df_j_raw)
 
-# --- 4. FILTER ---
+# --- 2. FILTER (SIDEBAR) ---
 st.sidebar.divider()
-st.sidebar.header("🔍 Filter")
+st.sidebar.header("🔍 2. Filtrering")
 
 if df_e.empty and df_j.empty:
-    st.info("👈 Börja med att ladda upp en fil i menyn.")
+    st.warning("Ladda upp en fil för att börja.")
 else:
+    # Samla filtervärden
     all_years = sorted(list(set(df_e.get('År', pd.Series()).dropna().astype(int)) | set(df_j.get('År', pd.Series()).dropna().astype(int))))
     all_races = sorted(list(set(df_e.get('Ras_Clean', pd.Series()).dropna().astype(str)) | set(df_j.get('Ras_Clean', pd.Series()).dropna().astype(str))))
+    all_classes = sorted(list(set(df_e.get('Klass', pd.Series()).dropna().astype(str)) | set(df_j.get('Klass', pd.Series()).dropna().astype(str))))
 
-    valda_raser = st.sidebar.multiselect("Ras", all_races, default=all_races[:1] if all_races else None)
-    valda_ar = st.sidebar.multiselect("År", all_years, default=all_years)
+    # Skapa filter
+    valda_raser = st.sidebar.multiselect("Välj Ras", all_races, default=all_races[:1] if all_races else None)
+    valda_ar = st.sidebar.multiselect("Välj År", all_years, default=all_years)
+    valda_klasser = st.sidebar.multiselect("Välj Klass", all_classes, default=all_classes)
 
+# Filtreringsfunktion
 def apply_filter(df):
     if df.empty: return df
     temp = df.copy()
     if valda_raser: temp = temp[temp['Ras_Clean'].isin(valda_raser)]
     if valda_ar and 'År' in temp.columns: temp = temp[temp['År'].isin(valda_ar)]
+    if valda_klasser and 'Klass' in temp.columns: temp = temp[temp['Klass'].isin(valda_klasser)]
     return temp
 
 df_e_filt = apply_filter(df_e)
 df_j_filt = apply_filter(df_j)
 
-# --- 5. VISNING (FLIKAR) ---
-tab1, tab2, tab3 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "❓ Hjälp & Guide"])
+# --- HUVUDVY (FLIKAR) ---
+tab1, tab2 = st.tabs(["🌲 Eftersök", "🌾 Fältprov"])
 
 # === FLIK 1: EFTERSÖK ===
 with tab1:
     if not df_e_filt.empty:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Starter", len(df_e_filt))
-        c2.metric("Unika Hundar", df_e_filt['regnr'].nunique() if 'regnr' in df_e_filt.columns else 0)
+        st.subheader("Eftersöksgrenar")
         
+        # Snabbsiffror
+        c1, c2, c3, c4 = st.columns(4)
+        num_starts = len(df_e_filt)
+        c1.metric("Antal Starter", num_starts)
+        c2.metric("Unika Hundar", df_e_filt['regnr'].nunique() if 'regnr' in df_e_filt.columns else 0)
+
+        # Godkända & Full Pott
         if 'Vatten_Final' in df_e_filt.columns and 'Spår_Final' in df_e_filt.columns:
             godkanda = df_e_filt[(df_e_filt['Vatten_Final'] >= 4) & (df_e_filt['Spår_Final'] >= 4)]
             full = df_e_filt[(df_e_filt['Vatten_Final'] == 10) & (df_e_filt['Spår_Final'] == 10)]
-            c3.metric("Godkända", f"{len(godkanda)} ({int(len(godkanda)/len(df_e_filt)*100)}%)")
-            c4.metric("10-10", len(full))
             
+            c3.metric("Godkända (4-4 eller mer)", f"{len(godkanda)} st ({round(len(godkanda)/num_starts*100, 1)}%)")
+            c4.metric("Full pott (10-10)", f"{len(full)} st")
+
             st.divider()
-            
-            # --- FIXADE DIAGRAM (STAPELDIAGRAM) ---
-            cc1, cc2 = st.columns(2)
-            
-            with cc1: 
-                # Räkna antal av varje betyg
-                v_counts = df_e_filt['Vatten_Final'].value_counts().sort_index()
-                fig_v = px.bar(x=v_counts.index, y=v_counts.values, 
-                               labels={'x': 'Betyg', 'y': 'Antal hundar'}, 
-                               title="Vattenbetyg", 
-                               color_discrete_sequence=['#3366CC'])
-                # Tvinga x-axeln att visa varje siffra
-                fig_v.update_layout(xaxis=dict(tickmode='linear', dtick=1))
-                st.plotly_chart(fig_v, use_container_width=True)
 
-            with cc2: 
-                s_counts = df_e_filt['Spår_Final'].value_counts().sort_index()
-                fig_s = px.bar(x=s_counts.index, y=s_counts.values, 
-                               labels={'x': 'Betyg', 'y': 'Antal hundar'}, 
-                               title="Spårbetyg", 
-                               color_discrete_sequence=['#109618'])
-                fig_s.update_layout(xaxis=dict(tickmode='linear', dtick=1))
-                st.plotly_chart(fig_s, use_container_width=True)
+            # --- TABELLER & DIAGRAM ---
+            col_v1, col_v2 = st.columns([1, 2])
             
+            # VATTEN
+            with col_v1:
+                st.markdown("##### 💧 Vattenbetyg (Tabell)")
+                # Skapa frekvenstabell
+                v_counts = df_e_filt['Vatten_Final'].value_counts().sort_index(ascending=False).rename("Antal")
+                st.dataframe(v_counts, use_container_width=True)
+            
+            with col_v2:
+                st.markdown("##### Diagram")
+                fig_v = px.bar(x=v_counts.index, y=v_counts.values, labels={'x': 'Betyg', 'y': 'Antal'}, color_discrete_sequence=['#3366CC'])
+                fig_v.update_layout(xaxis=dict(tickmode='linear', dtick=1), showlegend=False)
+                st.plotly_chart(fig_v, use_container_width=True, key="vatten_chart")
+
+            st.divider()
+
+            # SPÅR
+            col_s1, col_s2 = st.columns([1, 2])
+            with col_s1:
+                st.markdown("##### 🌲 Spårbetyg (Tabell)")
+                s_counts = df_e_filt['Spår_Final'].value_counts().sort_index(ascending=False).rename("Antal")
+                st.dataframe(s_counts, use_container_width=True)
+            
+            with col_s2:
+                st.markdown("##### Diagram")
+                fig_s = px.bar(x=s_counts.index, y=s_counts.values, labels={'x': 'Betyg', 'y': 'Antal'}, color_discrete_sequence=['#109618'])
+                fig_s.update_layout(xaxis=dict(tickmode='linear', dtick=1), showlegend=False)
+                st.plotly_chart(fig_s, use_container_width=True, key="spar_chart")
+            
+        st.markdown("---")
+        st.markdown("##### Detaljlista")
         st.dataframe(df_e_filt, use_container_width=True, hide_index=True)
-    else: st.info("Ingen eftersöksdata hittades.")
+        
+    else:
+        st.info("Ingen data matchar ditt val. Kontrollera filter i menyn.")
 
-# === FLIK 2: FÄLT ===
+# === FLIK 2: FÄLTPROV ===
 with tab2:
     if not df_j_filt.empty:
+        st.subheader("Jaktprov / Fält")
+        
         c1, c2 = st.columns(2)
-        c1.metric("Starter", len(df_j_filt))
+        c1.metric("Antal Starter", len(df_j_filt))
         c2.metric("Unika Hundar", df_j_filt['regnr'].nunique() if 'regnr' in df_j_filt.columns else 0)
         
         st.divider()
-        pris_col = next((c for c in df_j_filt.columns if "pris" in c.lower()), None)
-        if pris_col:
-            pc = df_j_filt[pris_col].value_counts().reset_index()
-            pc.columns = ['Pris', 'Antal']
-            st.plotly_chart(px.pie(pc, values='Antal', names='Pris', title="Prisfördelning", hole=0.4), use_container_width=True)
-            
-        st.dataframe(df_j_filt, use_container_width=True, hide_index=True)
-    else: st.info("Ingen fältprovsdata hittades.")
 
-# === FLIK 3: HJÄLP & GUIDE ===
-with tab3:
-    st.markdown("## 📘 Användarguide")
-    st.markdown("""
-    **1. Hämta dina filer**
-    Ladda ner resultaten från SKK eller din vanliga källa. Appen klarar Excel (.xlsx), CSV (.csv) och Textfiler (.txt).
-    
-    **2. Ladda upp**
-    Använd knapparna i menyn till vänster. Appen slår automatiskt ihop filerna om du laddar upp flera.
-    
-    **3. Filtrera**
-    I menyn kan du välja:
-    * **Ras:** Förvald på Kleiner Münsterländer (men du kan välja alla).
-    * **År:** Välj vilka år du vill analysera.
-    
-    **Flikarna:**
-    * **🌲 Eftersök:** Statistik för Vatten och Spår. Här ser du automatiskt antal Godkända och "Full pott" (10-10).
-    * **🌾 Fältprov:** Statistik för jaktprov/fält.
-    * **❓ Hjälp:** Denna guide.
-    """)
+        # Försök hitta pris-kolumn
+        pris_col = next((c for c in df_j_filt.columns if "pris" in c.lower()), None)
+        
+        if pris_col:
+            st.markdown("##### 🏆 Prisfördelning")
+            col_p1, col_p2 = st.columns([1, 2])
+            
+            # Räkna priser
+            p_counts = df_j_filt[pris_col].value_counts().rename("Antal")
+            
+            with col_p1:
+                st.markdown("**Tabell (Kopiera härifrån)**")
+                st.dataframe(p_counts, use_container_width=True)
+            
+            with col_p2:
+                fig_p = px.pie(values=p_counts.values, names=p_counts.index, hole=0.4)
+                st.plotly_chart(fig_p, use_container_width=True)
+        else:
+            st.warning("Hittade ingen kolumn som heter 'Pris'. Kontrollera filen.")
+
+        st.markdown("---")
+        st.dataframe(df_j_filt, use_container_width=True, hide_index=True)
+    else:
+        st.info("Ingen data matchar ditt val.")
 
 # --- EXPORT ---
 st.divider()
+st.subheader("📥 Ladda ner urval")
 output = io.BytesIO()
 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-    if not df_e_filt.empty: df_e_filt.to_excel(writer, index=False, sheet_name='Eftersök')
-    if not df_j_filt.empty: df_j_filt.to_excel(writer, index=False, sheet_name='Fält')
-st.download_button("📥 Ladda ner Excel", output.getvalue(), "KLM_Statistik.xlsx", "application/vnd.ms-excel")
+    if not df_e_filt.empty: df_e_filt.to_excel(writer, index=False, sheet_name='Eftersök Data')
+    if not df_j_filt.empty: df_j_filt.to_excel(writer, index=False, sheet_name='Fält Data')
+st.download_button("Ladda ner Excel-fil", output.getvalue(), "KLM_Statistik_Rapport.xlsx", "application/vnd.ms-excel")
