@@ -32,12 +32,16 @@ def parse_txt_to_df(txt_file):
             parts = line.split('\t')
             if len(parts) > 30:
                 try:
+                    # Försök gissa kön baserat på om data finns i kolumn 5 (ofta kön i SKK-filer)
+                    raw_kon = parts[5].strip() if len(parts) > 5 else "Okänd"
+                    
                     entry = {
                         "Datum": parts[0],
                         "Klass": parts[1].strip(),
                         "Hund": parts[2],
                         "regnr": parts[3],
                         "Ras_Clean": parts[4].strip(),
+                        "Kön_Raw": raw_kon, # Sparar för tvätt senare
                         "Vatten_Final": pd.to_numeric(parts[27], errors='coerce'),
                         "Spår_Final": pd.to_numeric(parts[28], errors='coerce'),
                         "Kritik": " ".join(parts[40:]).strip()
@@ -86,7 +90,7 @@ def load_all_data(excel, csv_e, csv_j, txt):
 
 df_e_raw, df_j_raw = load_all_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j, uploaded_txt)
 
-# --- CLEANING ---
+# --- CLEANING & KÖNS-DETEKTIV ---
 def clean_df(df):
     if df.empty: return df
     df.columns = df.columns.str.strip()
@@ -99,12 +103,31 @@ def clean_df(df):
     if 'Klass' in df.columns:
         df['Klass'] = df['Klass'].astype(str).str.upper().str.strip()
     
+    # --- RAS ---
     if 'Ras_Clean' not in df.columns:
         ras_candidates = ['rasnamn', 'Ras', 'Hundras']
         found_ras = next((c for c in ras_candidates if c in df.columns), None)
         df['Ras_Clean'] = df[found_ras] if found_ras else "Okänd"
     
-    # Poänghantering
+    # --- KÖN (Ny logik) ---
+    # Vi letar efter en kolumn som heter "Kön", "Sex" eller liknande.
+    # Om vi hittar "H" eller "Hane" -> Hane, "T" eller "Tik" -> Tik.
+    if 'Kön' not in df.columns:
+        kon_candidates = ['Kön', 'Sex', 'Gender', 'Kön_Raw']
+        found_kon = next((c for c in kon_candidates if c in df.columns), None)
+        
+        if found_kon:
+            # Standardisera till "Hane" och "Tik"
+            def standardisera_kon(val):
+                v = str(val).lower()
+                if 'h' in v: return 'Hane'
+                if 't' in v: return 'Tik'
+                return 'Okänd'
+            df['Kön'] = df[found_kon].apply(standardisera_kon)
+        else:
+            df['Kön'] = "Okänd (Saknas i fil)"
+            
+    # --- POÄNG ---
     if 'Vatten_Final' not in df.columns:
         col_v = next((c for c in df.columns if "vatten" in c.lower() and "kritik" not in c.lower()), None)
         if col_v: df['Vatten_Final'] = pd.to_numeric(df[col_v], errors='coerce').fillna(0)
@@ -127,10 +150,12 @@ else:
     all_years = sorted(list(set(df_e.get('År', pd.Series()).dropna().astype(int)) | set(df_j.get('År', pd.Series()).dropna().astype(int))))
     all_races = sorted(list(set(df_e.get('Ras_Clean', pd.Series()).dropna().astype(str)) | set(df_j.get('Ras_Clean', pd.Series()).dropna().astype(str))))
     all_classes = sorted(list(set(df_e.get('Klass', pd.Series()).dropna().astype(str)) | set(df_j.get('Klass', pd.Series()).dropna().astype(str))))
+    all_sex = sorted(list(set(df_e.get('Kön', pd.Series()).dropna().astype(str)) | set(df_j.get('Kön', pd.Series()).dropna().astype(str))))
 
     valda_raser = st.sidebar.multiselect("Välj Ras", all_races, default=all_races[:1] if all_races else None)
     valda_ar = st.sidebar.multiselect("Välj År", all_years, default=all_years)
     valda_klasser = st.sidebar.multiselect("Välj Klass", all_classes, default=all_classes)
+    valda_kon = st.sidebar.multiselect("Välj Kön", all_sex, default=all_sex)
 
 def apply_filter(df):
     if df.empty: return df
@@ -138,56 +163,47 @@ def apply_filter(df):
     if valda_raser: temp = temp[temp['Ras_Clean'].isin(valda_raser)]
     if valda_ar and 'År' in temp.columns: temp = temp[temp['År'].isin(valda_ar)]
     if valda_klasser and 'Klass' in temp.columns: temp = temp[temp['Klass'].isin(valda_klasser)]
+    if valda_kon and 'Kön' in temp.columns: temp = temp[temp['Kön'].isin(valda_kon)]
     return temp
 
 df_e_filt = apply_filter(df_e)
 df_j_filt = apply_filter(df_j)
 
-# --- FUNKTION FÖR ATT SNYGGA TILL TABELLER (SÄKER VERSION) ---
+# --- FUNKTION: SNYGGA TABELLER ---
 def prepare_display_table(df, is_field=False):
     visning = df.copy()
-    
-    # 1. Hantera Datum: Prioritera den snygga textsträngen
     if 'Datum_Str' in visning.columns:
-        if 'Datum' in visning.columns:
-            visning = visning.drop(columns=['Datum']) # Kasta det gamla datumobjektet
-        visning = visning.rename(columns={'Datum_Str': 'Datum'}) # Byt namn på det snygga till "Datum"
+        if 'Datum' in visning.columns: visning = visning.drop(columns=['Datum'])
+        visning = visning.rename(columns={'Datum_Str': 'Datum'})
 
-    # 2. Byt namn på övriga kolumner (mappning)
     rename_map = {
-        'regnr': 'Reg.nr',
-        'Hund': 'Hundnamn',
-        'namn': 'Hundnamn',
-        'Vatten_Final': 'Vatten',
-        'Spår_Final': 'Spår',
-        'Ras_Clean': 'Ras',
-        'Kritik': 'Domarberättelse'
+        'regnr': 'Reg.nr', 'Hund': 'Hundnamn', 'namn': 'Hundnamn',
+        'Vatten_Final': 'Vatten', 'Spår_Final': 'Spår', 'Ras_Clean': 'Ras',
+        'Kritik': 'Domarberättelse', 'Kön': 'Kön'
     }
-    
     if is_field:
         pris_col = next((c for c in df.columns if "pris" in c.lower()), None)
         if pris_col: rename_map[pris_col] = 'Pris'
     
-    # 3. Utför namnbytet
     visning = visning.rename(columns=rename_map)
-    
-    # 4. Sista säkerhetskoll: Ta bort dubbletter om de ändå uppstått
     visning = visning.loc[:, ~visning.columns.duplicated()]
 
-    # 5. Välj kolumner att visa
-    priority_cols = ['Datum', 'Reg.nr', 'Hundnamn', 'Ras', 'Klass']
-    
-    if not is_field:
-        priority_cols += ['Vatten', 'Spår']
-    else:
+    priority_cols = ['Datum', 'Reg.nr', 'Hundnamn', 'Kön', 'Ras', 'Klass']
+    if not is_field: priority_cols += ['Vatten', 'Spår']
+    else: 
         if 'Pris' in visning.columns: priority_cols += ['Pris']
-
-    if 'Domarberättelse' in visning.columns:
-        priority_cols += ['Domarberättelse']
+    if 'Domarberättelse' in visning.columns: priority_cols += ['Domarberättelse']
     
-    # Filtrera
     final_cols = [c for c in priority_cols if c in visning.columns]
     return visning[final_cols]
+
+# --- HJÄLPFUNKTION: BERÄKNA KÖNSFÖRDELNING ---
+def get_gender_breakdown(df):
+    if 'Kön' not in df.columns: return ""
+    hanar = len(df[df['Kön'] == 'Hane'])
+    tikar = len(df[df['Kön'] == 'Tik'])
+    okanda = len(df) - hanar - tikar
+    return f"({hanar} Hanar, {tikar} Tikar)"
 
 # --- FLIKAR ---
 tab1, tab2, tab3, tab4 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "❓ Guide", "ℹ️ Info & GDPR"])
@@ -199,12 +215,15 @@ with tab1:
         
         c1, c2, c3, c4 = st.columns(4)
         num_starts = len(df_e_filt)
-        c1.metric("Antal Starter", num_starts)
+        gender_info = get_gender_breakdown(df_e_filt)
+        
+        c1.metric("Antal Starter", f"{num_starts}", delta=gender_info, delta_color="off")
         c2.metric("Unika Hundar", df_e_filt['regnr'].nunique() if 'regnr' in df_e_filt.columns else 0)
 
         if 'Vatten_Final' in df_e_filt.columns and 'Spår_Final' in df_e_filt.columns:
             godkanda = df_e_filt[(df_e_filt['Vatten_Final'] >= 4) & (df_e_filt['Spår_Final'] >= 4)]
             full = df_e_filt[(df_e_filt['Vatten_Final'] == 10) & (df_e_filt['Spår_Final'] == 10)]
+            
             c3.metric("Godkända (4-4+)", f"{len(godkanda)} ({round(len(godkanda)/num_starts*100, 1)}%)")
             c4.metric("Full pott (10-10)", f"{len(full)}")
 
@@ -243,6 +262,7 @@ with tab1:
             hide_index=True,
             column_config={
                 "Reg.nr": st.column_config.TextColumn(width="small"),
+                "Kön": st.column_config.TextColumn(width="small"),
                 "Vatten": st.column_config.NumberColumn(width="small"),
                 "Spår": st.column_config.NumberColumn(width="small"),
                 "Domarberättelse": st.column_config.TextColumn(width="large"),
@@ -255,7 +275,10 @@ with tab2:
     if not df_j_filt.empty:
         st.subheader("Jaktprov / Fält")
         c1, c2 = st.columns(2)
-        c1.metric("Antal Starter", len(df_j_filt))
+        num_starts_j = len(df_j_filt)
+        gender_info_j = get_gender_breakdown(df_j_filt)
+
+        c1.metric("Antal Starter", f"{num_starts_j}", delta=gender_info_j, delta_color="off")
         c2.metric("Unika Hundar", df_j_filt['regnr'].nunique() if 'regnr' in df_j_filt.columns else 0)
         st.divider()
 
@@ -277,6 +300,7 @@ with tab2:
             hide_index=True,
             column_config={
                 "Reg.nr": st.column_config.TextColumn(width="small"),
+                "Kön": st.column_config.TextColumn(width="small"),
                 "Pris": st.column_config.TextColumn(width="small"),
                 "Domarberättelse": st.column_config.TextColumn(width="large"),
             }
@@ -307,11 +331,13 @@ with tab3:
     * **Ras:** Kontrollera att det står "Kleiner Münsterländer".
     * **År:** Välj det år du jobbar med (t.ex. 2024).
     * **Klass:** Välj klass (t.ex. UKL eller ÖKL) för att få rätt siffror till rapporten.
+    * **Kön:** Du kan nu välja att se bara **Tikar** eller **Hanar**.
 
     #### 3. Läs av siffrorna
     Nu är det bara att skriva av siffrorna till rapporten!
-    * **För Eftersök:** Gå till fliken **🌲 Eftersök**. Använd tabellerna för "Vattenbetyg" och "Spårbetyg".
-    * **För Fältprov:** Gå till fliken **🌾 Fältprov**. Läs av tabellen "Prisfördelning".
+    * **Eftersök (Tabell 2 & 3):** * Titta på siffran under "Antal Starter". Där står det t.ex. *(12 Hanar, 14 Tikar)*.
+        * Använd tabellerna för "Vattenbetyg" och "Spårbetyg".
+    * **Fältprov (Tabell 1):** * Gå till fliken **🌾 Fältprov**. Läs av "Prisfördelning" och antalet Hanar/Tikar högst upp.
 
     ---
     **Tips!**
