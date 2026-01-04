@@ -8,7 +8,7 @@ import re
 st.set_page_config(page_title="SVK Avelsstatistik", page_icon="🐕", layout="wide")
 
 st.title("📊 SVK - Statistikverktyg för avel")
-st.markdown("Automatiskt underlag för **Verksamhetsberättelser** och avelsuppföljning för alla raser inom SVK.")
+st.markdown("Automatiskt underlag för **årssammanställningar** och avelsuppföljning. Verktyget är till för **avelsråd och avelsfunktionärer** inom SVK.")
 
 # --- 1. LADDA UPP FILER ---
 st.sidebar.header("📂 1. Ladda upp data")
@@ -16,7 +16,7 @@ st.sidebar.header("📂 1. Ladda upp data")
 # Provresultat
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🌲 Provresultat")
-st.sidebar.info("Ladda upp filer från SKK eller Kommitténs Drive.")
+st.sidebar.info("Ladda upp filer från SKK eller gemensam Drive.")
 uploaded_excel = st.sidebar.file_uploader("Excel-fil (Alla prov)", type=["xlsx"], key="excel")
 uploaded_csv_e = st.sidebar.file_uploader("Eftersök (.csv)", type=["csv"], key="csv_e")
 uploaded_csv_j = st.sidebar.file_uploader("Jaktprov (.csv)", type=["csv"], key="csv_j")
@@ -215,6 +215,7 @@ def prepare_display_table(df, is_field=False, add_links=False):
         if 'Datum' in visning.columns: visning = visning.drop(columns=['Datum'])
         visning = visning.rename(columns={'Datum_Str': 'Datum'})
 
+    # Byt namn till svenska
     rename_map = {
         'regnr': 'Reg.nr', 'Hund': 'Hundnamn', 'namn': 'Hundnamn',
         'Vatten_Final': 'Vatten', 'Spår_Final': 'Spår', 'Ras_Clean': 'Ras',
@@ -227,10 +228,12 @@ def prepare_display_table(df, is_field=False, add_links=False):
     visning = visning.rename(columns=rename_map)
     visning = visning.loc[:, ~visning.columns.duplicated()]
 
+    # SKAPA LÄNK (Endast om vi vill visa på skärm)
     if add_links and 'Reg.nr' in visning.columns:
         base_url = "https://hundar.skk.se/hunddata/Hund_sok.aspx?sok="
         visning['Reg.nr'] = visning['Reg.nr'].apply(lambda x: f"{base_url}{x}" if pd.notna(x) else x)
 
+    # Välj kolumner
     priority_cols = ['Datum', 'Reg.nr', 'Hundnamn', 'Kön', 'Ras', 'Klass']
     if not is_field: priority_cols += ['Vatten', 'Spår']
     else: 
@@ -303,7 +306,7 @@ with tab1:
                 "Domarberättelse": st.column_config.TextColumn(width="large"),
             }
         )
-    else: st.info("Ingen provdata matchar filtret.")
+    else: st.info("Ingen provdata laddad eller matchar filtret.")
 
 # === FLIK 2: FÄLT ===
 with tab2:
@@ -344,7 +347,7 @@ with tab2:
 with tab3:
     st.subheader("🏥 Hälsostatistik (HD/ED)")
     if df_h_filt.empty:
-        st.info("Ingen hälsodata laddad. Se 'Guide' för instruktioner om hur du hämtar filer.")
+        st.info("Ingen hälsodata laddad. Se 'Guide' för instruktioner.")
     else:
         cols = df_h_filt.columns
         res_col = next((c for c in cols if 'resultat' in c.lower() or 'diagnos' in c.lower()), None)
@@ -360,39 +363,40 @@ with tab3:
             st.markdown("---")
             st.dataframe(df_h_filt, use_container_width=True)
         else:
-            st.warning("Kunde inte hitta resultat-kolumnen automatiskt. Visar hela listan:")
+            st.warning("Hittade inte resultat-kolumnen. Visar listan:")
             st.dataframe(df_h_filt)
 
 # === FLIK 4: GUIDE ===
 with tab4:
     st.markdown("## 📘 Användarguide (SVK)")
-    st.markdown("Detta verktyg är till för **alla rasklubbar inom Svenska Vorstehklubben**.")
+    st.markdown("Detta verktyg är ett stöd för dig som är **avelsråd eller avelsfunktionär** inom Svenska Vorstehklubben (SVK).")
     
     st.markdown("""
     ### 📂 Steg 1: Hämta Data
     För att använda verktyget behöver du ladda upp filer.
 
     **A. Provresultat (Eftersök/Fält)**
-    * Dessa filer brukar finnas på er **Gemensamma Google Drive**.
-    * Kontakta avelskommittén om du saknar behörighet.
+    * Dessa filer hämtas vanligtvis från er **Gemensamma Google Drive**.
+    * Om du saknar åtkomst, kontakta avelskommittén.
 
     **B. Hälsodata (HD/ED)**
     * Gå till **[SKK Avelsdata](https://hundar.skk.se/avelsdata)**.
-    * Sök på din ras (t.ex. Breton eller Korthårig Vorsteh).
+    * Sök på din ras (t.ex. Korthårig Vorsteh eller Kleiner Münsterländer).
     * Klicka på fliken **"Hälsa"** -> Välj diagnos (t.ex. HD).
     * Klicka på **Excel-ikonen** för att ladda ner listan.
 
     ---
 
     ### 📂 Steg 2: Ladda upp & Filtrera
-    1. Ladda upp filerna i menyn till vänster (under rätt rubrik).
+    1. Ladda upp filerna i menyn till vänster.
     2. Välj **Ras** och **År** i filtret.
-    3. Om du ska skriva verksamhetsberättelse, glöm inte att välja **Klass** (t.ex. UKL).
+    3. Om du ska göra **årssammanställning**, välj även **Klass**.
+    4. Om filen saknar "Kön", använd felsökningsverktyget i menyn.
 
     ### 📊 Steg 3: Analysera
-    * **Eftersök:** Se betyg för Vatten/Spår och antal godkända.
-    * **Fältprov:** Se prisfördelning (1:a, 2:a osv).
-    * **Hälsa:** Se staplar över HD-resultat (A, B, C...).
+    * **Eftersök:** Betygsfördelning, godkända hundar och könsuppdelning.
+    * **Fältprov:** Prisfördelning och detaljer.
+    * **Hälsa:** Stapeldiagram över HD/ED-resultat.
     
     *Tips: Klicka på registreringsnumret i listorna för att se hunden på SKK.*
     """)
@@ -402,11 +406,11 @@ with tab5:
     st.header("ℹ️ Information & Säkerhet")
     st.markdown("""
     ### 🛡️ SVK Datapolicy
-    Detta verktyg tillhandahålls för avelsfunktionärer inom Svenska Vorstehklubben (SVK).
+    Detta verktyg tillhandahålls för avelsfunktionärer inom SVK för att underlätta arbetet med statistik.
     
-    * **Syfte:** Effektivisera framtagandet av statistik till verksamhetsberättelser och avelsutvärdering.
+    * **Syfte:** Effektivisera avelsuppföljning och framtagande av årssammanställningar.
     * **Lagring:** Ingen data sparas. All bearbetning sker i arbetsminnet och raderas vid stängning.
-    * **Personuppgifter:** Verktyget hanterar resultatlistor. Detta sker med stöd av *berättigat intresse* för föreningens avelsarbete.
+    * **Personuppgifter:** Verktyget hanterar resultatlistor med stöd av *berättigat intresse* för föreningens avelsarbete.
     """)
 
 # --- EXPORT ---
