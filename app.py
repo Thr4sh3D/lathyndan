@@ -8,77 +8,54 @@ import re
 st.set_page_config(page_title="SVK Avelsstatistik", page_icon="🐕", layout="wide")
 
 st.title("📊 SVK - Statistikverktyg för avel")
-st.markdown("Automatiskt underlag för **årssammanställningar** och avelsuppföljning. Verktyget är till för **avelsråd och avelsfunktionärer** inom SVK.")
+st.markdown("Automatiskt underlag för **årssammanställningar** och avelsuppföljning.")
 
 # --- 1. LADDA UPP FILER ---
 st.sidebar.header("📂 1. Ladda upp data")
 
 st.sidebar.markdown("### 🌲 Provresultat")
-st.sidebar.info("Ladda upp Master-filen (Excel).")
+st.sidebar.info("Ladda upp Master-filen (Excel) eller separata filer.")
+
 uploaded_excel = st.sidebar.file_uploader("Excel-fil (SVK Årsstatistik)", type=["xlsx"], key="excel")
+
+with st.sidebar.expander("Ladda upp separata filer (CSV/TXT)"):
+    uploaded_csv_e = st.sidebar.file_uploader("Eftersök (.csv)", type=["csv"], key="csv_e")
+    uploaded_csv_j = st.sidebar.file_uploader("Jaktprov (.csv)", type=["csv"], key="csv_j")
+    uploaded_txt   = st.sidebar.file_uploader("Textfil SKK (.txt)", type=["txt"], key="txt_prov")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🏥 Hälsodata")
-uploaded_halsa = st.sidebar.file_uploader("Hälsofil från Avelsdata (Excel)", type=["xlsx", "txt", "csv"], key="halsa")
+uploaded_halsa = st.sidebar.file_uploader("Hälsofil (Excel)", type=["xlsx", "txt", "csv"], key="halsa")
 
-# --- IDENTIFIERING AV FLIKAR ---
-def identify_sheet_type(df, sheet_name):
-    """
-    Gissar om en flik är Eftersök eller Fält baserat på kolumner.
-    """
-    cols = [str(c).lower().strip() for c in df.columns]
-    
-    # Debug-info (sparas för att visas om det krånglar)
-    debug_msg = f"Flik: '{sheet_name}' | Kolumner: {cols[:5]}..."
+# --- PARSING FUNKTIONER ---
 
-    # Fältprov har ofta "pris", "egenskap", "fält", "resultat"
-    if any(k in c for c in cols for k in ["fält", "resultat", "pris", "egenskap"]):
-        return "Fält", debug_msg
-    
-    # Eftersök har ofta "vatten", "spår", "eftersök"
-    if any(k in c for c in cols for k in ["vatten", "spår"]):
-        return "Eftersök", debug_msg
-        
-    return "Okänd", debug_msg
-
-# --- DATALOAD ---
-@st.cache_data
-def load_prov_data(excel):
-    df_e_list = []
-    df_j_list = []
-    debug_log = []
-    
-    if excel:
-        try:
-            xls = pd.ExcelFile(excel)
-            for sheet_name in xls.sheet_names:
-                # Läs in och rensa lite direkt
-                df = pd.read_excel(xls, sheet_name=sheet_name)
-                df = df.dropna(how='all') # Ta bort tomma rader
-                
-                typ, msg = identify_sheet_type(df, sheet_name)
-                debug_log.append(f"{msg} -> **{typ}**")
-                
-                if typ == "Eftersök":
-                    df_e_list.append(df)
-                elif typ == "Fält":
-                    df_j_list.append(df)
-                else:
-                    # FALLBACK: Om fliken heter "Blad1" gissa Fält, "Blad2" gissa Eftersök
-                    if "1" in sheet_name:
-                        df_j_list.append(df)
-                        debug_log.append(f"⚠️ Tvingade '{sheet_name}' till Fält (Fallback)")
-                    elif "2" in sheet_name:
-                        df_e_list.append(df)
-                        debug_log.append(f"⚠️ Tvingade '{sheet_name}' till Eftersök (Fallback)")
-
-        except Exception as e:
-            return pd.DataFrame(), pd.DataFrame(), [f"Fel vid inläsning: {e}"]
-
-    df_e_tot = pd.concat(df_e_list, ignore_index=True) if df_e_list else pd.DataFrame()
-    df_j_tot = pd.concat(df_j_list, ignore_index=True) if df_j_list else pd.DataFrame()
-    
-    return df_e_tot, df_j_tot, debug_log
+def parse_txt_to_df(txt_file):
+    # Gammal logik för textfiler (Lathunden)
+    content = txt_file.getvalue()
+    try: text_data = content.decode("latin-1")
+    except: text_data = content.decode("utf-8", errors="ignore")
+    lines = text_data.split('\n')
+    data = []
+    for line in lines:
+        if re.match(r'^\d{2}-\d{2}-\d{2}', line):
+            parts = line.split('\t')
+            if len(parts) > 30:
+                try:
+                    raw_kon = parts[5].strip() if len(parts) > 5 else "Okänd"
+                    entry = {
+                        "Datum": parts[0],
+                        "Klass": parts[1].strip(),
+                        "Hund": parts[2],
+                        "regnr": parts[3],
+                        "Ras": parts[4].strip(),
+                        "Kön": raw_kon,
+                        "Vatten": pd.to_numeric(parts[27], errors='coerce'),
+                        "Spår": pd.to_numeric(parts[28], errors='coerce'),
+                        "Kritik": " ".join(parts[40:]).strip()
+                    }
+                    data.append(entry)
+                except: continue
+    return pd.DataFrame(data)
 
 def parse_health_file(file):
     try:
@@ -89,67 +66,138 @@ def parse_health_file(file):
         return pd.read_csv(io.StringIO(txt), sep='\t', on_bad_lines='skip')
     except: return pd.DataFrame()
 
-df_e_raw, df_j_raw, debug_info = load_prov_data(uploaded_excel)
+# --- HUVUDINLÄSNING ---
+@st.cache_data
+def load_prov_data(excel, csv_e, csv_j, txt):
+    df_e_list = []
+    df_j_list = []
+    log_msg = []
+
+    # 1. EXCEL (Master-fil)
+    if excel:
+        try:
+            xls = pd.ExcelFile(excel)
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet)
+                df = df.dropna(how='all') # Rensa tomma rader
+                cols = [str(c).lower() for c in df.columns]
+                
+                # LOGIK: Identifiera vad fliken innehåller
+                is_eftersok = False
+                is_falt = False
+                
+                # A. Namn-baserad identifiering (Starkast)
+                if "blad2" in sheet.lower() or "eftersök" in sheet.lower():
+                    is_eftersok = True
+                elif "blad1" in sheet.lower() or "jakt" in sheet.lower() or "fält" in sheet.lower():
+                    is_falt = True
+                
+                # B. Innehålls-baserad (Om namnet inte matchar)
+                if not is_eftersok and not is_falt:
+                    if any("vatten" in c for c in cols) and any("spår" in c for c in cols):
+                        is_eftersok = True
+                    elif any("pris" in c for c in cols) or any("resultat" in c for c in cols):
+                        is_falt = True
+
+                # Lägg till i rätt lista
+                if is_eftersok:
+                    df_e_list.append(df)
+                    log_msg.append(f"Läste in '{sheet}' som **Eftersök** ({len(df)} rader)")
+                elif is_falt:
+                    df_j_list.append(df)
+                    log_msg.append(f"Läste in '{sheet}' som **Fält/Jakt** ({len(df)} rader)")
+                else:
+                    log_msg.append(f"Ignorerade fliken '{sheet}' (Kunde inte identifiera typ)")
+
+        except Exception as e:
+            log_msg.append(f"Fel vid Excel-läsning: {e}")
+
+    # 2. CSV/TXT (Legacy support)
+    if csv_e:
+        try:
+            df = pd.read_csv(csv_e, sep=';', encoding='latin1', on_bad_lines='skip')
+            if len(df.columns) < 2: df = pd.read_csv(csv_e, sep=',', encoding='utf-8', on_bad_lines='skip')
+            df_e_list.append(df)
+            log_msg.append("Läste in CSV (Eftersök)")
+        except: pass
+    
+    if csv_j:
+        try:
+            df = pd.read_csv(csv_j, sep=';', encoding='latin1', on_bad_lines='skip')
+            if len(df.columns) < 2: df = pd.read_csv(csv_j, sep=',', encoding='utf-8', on_bad_lines='skip')
+            df_j_list.append(df)
+            log_msg.append("Läste in CSV (Fält)")
+        except: pass
+
+    if txt:
+        df_txt = parse_txt_to_df(txt)
+        if not df_txt.empty:
+            df_e_list.append(df_txt)
+            log_msg.append("Läste in Textfil (Eftersök)")
+
+    # Slå ihop allt
+    df_e_tot = pd.concat(df_e_list, ignore_index=True) if df_e_list else pd.DataFrame()
+    df_j_tot = pd.concat(df_j_list, ignore_index=True) if df_j_list else pd.DataFrame()
+    
+    return df_e_tot, df_j_tot, log_msg
+
+df_e_raw, df_j_raw, debug_logs = load_prov_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j, uploaded_txt)
 df_halsa_raw = parse_health_file(uploaded_halsa) if uploaded_halsa else pd.DataFrame()
 
-# --- FELSÖKNINGSRUTA I MENYN ---
-if uploaded_excel:
-    with st.sidebar.expander("🛠️ Vad läser appen?"):
-        for log in debug_info:
-            st.write(log)
-        st.write(f"Antal rader Eftersök: {len(df_e_raw)}")
-        st.write(f"Antal rader Fält: {len(df_j_raw)}")
-
-# --- CLEANING ---
+# --- DATATVÄTT (Standardisering) ---
 def clean_df(df):
     if df.empty: return df
     
-    # Rensa kolumnnamn (ta bort mellanslag)
+    # 1. Rensa kolumnnamn
     df.columns = df.columns.str.strip()
     
-    # Mappning för att hitta rätt kolumn oavsett vad den heter
+    # 2. Mappa till standardnamn
     col_map = {}
     for c in df.columns:
         cl = c.lower()
-        if 'datum' in cl and 'röntgen' not in cl: col_map['Datum'] = c
+        if 'datum' in cl and 'födelse' not in cl: col_map['Datum'] = c
         if 'klass' in cl: col_map['Klass'] = c
-        if 'ras' in cl: col_map['Ras'] = c
+        if 'ras' in cl and 'namn' not in cl: col_map['Ras'] = c
+        elif 'rasnamn' in cl: col_map['Ras'] = c # Fallback
         if 'regnr' in cl or 'reg.nr' in cl: col_map['Regnr'] = c
         
-        # Kön-detektiv
+        # Kön
         if 'kön' in cl: col_map['Kön'] = c
-        elif c.lower() == 'sex': col_map['Kön'] = c
+        elif c == 'S': col_map['Kön'] = c # Ibland heter kön "S" (Sex)
         
-        # Hundnamn
+        # Hund
         if 'hund' in cl and 'namn' in cl: col_map['Hund'] = c
         elif 'hund' in cl and 'fader' not in cl and 'moder' not in cl: col_map['Hund'] = c
-        elif 'namn' in cl and 'ras' not in cl and 'ägare' not in cl: col_map['Hund'] = c
+        elif 'namn' in cl and 'ras' not in cl and 'ägare' not in cl and 'domare' not in cl: col_map['Hund'] = c
         
-        # Poäng Eftersök
-        if 'vatten' in cl: col_map['Vatten'] = c
-        if 'spår' in cl: col_map['Spår'] = c
+        # Eftersök
+        if 'vatten' in cl and 'poäng' not in cl: col_map['Vatten'] = c
+        if 'spår' in cl and 'poäng' not in cl: col_map['Spår'] = c
         
-        # Resultat Fält
+        # Fält
         if 'resultat' in cl: col_map['Resultat'] = c
+        if 'pris' in cl and 'egenskap' not in cl: col_map['Pris'] = c
         if 'betyg' in cl: col_map['Fältbetyg'] = c
         if 'domare' in cl: col_map['Domare'] = c
-        if 'pris' in cl: col_map['Pris'] = c # Ibland heter det Pris istället för Resultat
+        if 'kritik' in cl: col_map['Kritik'] = c
 
-    # Skapa standardiserade kolumner
+    # Applicera mappning
     for standard, original in col_map.items():
         df[standard] = df[original]
 
-    # DATUM & ÅR
+    # Om Resultat saknas men Pris finns -> Använd Pris som Resultat
+    if 'Pris' in df.columns and 'Resultat' not in df.columns:
+        df['Resultat'] = df['Pris']
+
+    # 3. Typkonvertering
     if 'Datum' in df.columns:
         df['Datum'] = pd.to_datetime(df['Datum'], errors='coerce')
         df['Datum_Str'] = df['Datum'].dt.strftime('%Y-%m-%d')
         df['År'] = df['Datum'].dt.year
     
-    # KLASS
     if 'Klass' in df.columns:
         df['Klass'] = df['Klass'].astype(str).str.upper().str.strip()
 
-    # KÖN (Standardisering Hane/Tik)
     if 'Kön' in df.columns:
         def fix_kon(v):
             v = str(v).lower()
@@ -160,11 +208,10 @@ def clean_df(df):
     else:
         df['Kön'] = "Okänd"
 
-    # POÄNG (Tvinga till siffror)
-    if 'Vatten' in df.columns:
-        df['Vatten'] = pd.to_numeric(df['Vatten'], errors='coerce').fillna(0)
-    if 'Spår' in df.columns:
-        df['Spår'] = pd.to_numeric(df['Spår'], errors='coerce').fillna(0)
+    # Poäng till siffror
+    for col in ['Vatten', 'Spår']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     return df
 
@@ -187,12 +234,12 @@ all_races = sorted(list(set(df_e.get('Ras', pd.Series()).dropna().astype(str)) |
 all_classes = sorted(list(set(df_e.get('Klass', pd.Series()).dropna().astype(str)) | set(df_j.get('Klass', pd.Series()).dropna().astype(str))))
 all_sex = ["Hane", "Tik"]
 
-if not all_races: all_races = ["Ladda fil först"]
+if not all_races: all_races = ["(Ingen data)"]
 
-valda_raser = st.sidebar.multiselect("Välj Ras", all_races, default=all_races[:1] if all_races else None)
+valda_raser = st.sidebar.multiselect("Välj Ras", all_races, default=all_races[0] if all_races else None)
 valda_ar = st.sidebar.multiselect("Välj År", all_years, default=all_years[:1] if all_years else None)
-valda_klasser = st.sidebar.multiselect("Välj Klass (Prov)", all_classes, default=all_classes)
-valda_kon = st.sidebar.multiselect("Välj Kön (Prov)", all_sex, default=all_sex)
+valda_klasser = st.sidebar.multiselect("Välj Klass", all_classes, default=all_classes)
+valda_kon = st.sidebar.multiselect("Välj Kön", all_sex, default=all_sex)
 
 def apply_filter(df):
     if df.empty: return df
@@ -213,25 +260,20 @@ def prepare_display_table(df, type="Standard", add_links=False):
     cols_to_show = ['Datum_Str', 'Regnr', 'Hund', 'Kön', 'Ras', 'Klass']
     
     if type == "Eftersök":
-        cols_to_show += ['Vatten', 'Spår']
-        if 'Domare' in visning.columns: cols_to_show.append('Domare')
+        cols_to_show += ['Vatten', 'Spår', 'Domare']
     elif type == "Fält":
-        # Prioritera Resultat-kolumner
+        # Prioritera Resultat
         if 'Resultat' in visning.columns: cols_to_show.append('Resultat')
-        elif 'Pris' in visning.columns: cols_to_show.append('Pris')
         if 'Fältbetyg' in visning.columns: cols_to_show.append('Fältbetyg')
         if 'Domare' in visning.columns: cols_to_show.append('Domare')
+        if 'Kritik' in visning.columns: cols_to_show.append('Kritik')
 
-    # Filtrera
+    # Filtrera kolumner
     final_cols = [c for c in cols_to_show if c in visning.columns]
     visning = visning[final_cols]
     
     # Byt namn
-    rename_map = {'Datum_Str': 'Datum', 'Regnr': 'Reg.nr', 'Hund': 'Hundnamn'}
-    # Om Resultat saknas men Pris finns, döp om Pris till Resultat för konsekvens
-    if 'Pris' in visning.columns and 'Resultat' not in visning.columns:
-        rename_map['Pris'] = 'Resultat'
-        
+    rename_map = {'Datum_Str': 'Datum', 'Regnr': 'Reg.nr', 'Hund': 'Hundnamn', 'Kritik': 'Domarberättelse'}
     visning = visning.rename(columns=rename_map)
 
     # Länkar
@@ -248,7 +290,7 @@ def get_gender_breakdown(df):
     return f"({hanar} Hanar, {tikar} Tikar)"
 
 # --- FLIKAR ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🏥 Hälsa (HD/ED)", "❓ Guide", "ℹ️ Info & GDPR"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🏥 Hälsa", "🔍 Felsökning (Rådata)", "❓ Guide", "ℹ️ Info"])
 
 # === FLIK 1: EFTERSÖK ===
 with tab1:
@@ -294,7 +336,7 @@ with tab1:
             df_visning_e, use_container_width=True, hide_index=True,
             column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")}
         )
-    else: st.info("Ladda upp data och välj filter för att se statistik.")
+    else: st.info("Ingen data. Ladda upp fil eller kontrollera 'Felsökning'.")
 
 # === FLIK 2: FÄLT ===
 with tab2:
@@ -324,7 +366,7 @@ with tab2:
             df_visning_j, use_container_width=True, hide_index=True,
             column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")}
         )
-    else: st.info("Ladda upp data och välj filter för att se statistik.")
+    else: st.info("Ingen data. Ladda upp fil eller kontrollera 'Felsökning'.")
 
 # === FLIK 3: HÄLSA ===
 with tab3:
@@ -347,33 +389,57 @@ with tab3:
             st.warning("Hittade inte resultat-kolumnen.")
             st.dataframe(df_h_filt)
 
-# === FLIK 4: GUIDE ===
+# === FLIK 4: FELSÖKNING (NY) ===
 with tab4:
+    st.markdown("### 🕵️‍♀️ Rådata & Felsökning")
+    st.markdown("Om tabellerna är tomma kan du se här vad appen faktiskt har lyckats läsa in.")
+    
+    if uploaded_excel or uploaded_csv_e or uploaded_txt:
+        st.markdown("**Inläsningslogg:**")
+        for msg in debug_logs:
+            st.text(f"- {msg}")
+            
+        st.markdown("---")
+        st.markdown(f"**Rådata Eftersök ({len(df_e_raw)} rader):**")
+        if not df_e_raw.empty:
+            st.dataframe(df_e_raw.head(5))
+            st.text(f"Kolumner: {list(df_e_raw.columns)}")
+        else:
+            st.warning("Eftersöks-tabellen är tom.")
+
+        st.markdown(f"**Rådata Fält ({len(df_j_raw)} rader):**")
+        if not df_j_raw.empty:
+            st.dataframe(df_j_raw.head(5))
+            st.text(f"Kolumner: {list(df_j_raw.columns)}")
+        else:
+            st.warning("Fält-tabellen är tom.")
+            
+    else:
+        st.info("Ladda upp en fil först.")
+
+# === FLIK 5: GUIDE ===
+with tab5:
     st.markdown("## 📘 Användarguide (SVK)")
-    st.markdown("Verktyget används av **avelsråd** och **funktionärer** inom SVK för årssammanställningar.")
+    st.markdown("Verktyget används av **avelsråd** och **funktionärer** inom SVK.")
     
     st.markdown("""
     ### 📂 Steg 1: Hämta & Ladda upp
-    1. **Provresultat:** Ladda ner den samlade "Årsstatistik"-filen (Excel) från den gemensamma driven.
-    2. **Hälsodata:** Ladda ner Excel-listor från **[SKK Avelsdata](https://hundar.skk.se/avelsdata)**.
-    3. **Ladda upp:** Använd menyn till vänster i detta verktyg.
+    1. **Provresultat:** Ladda ner "Årsstatistik"-filen (Excel) från gemensam drive.
+    2. **Hälsodata:** Hämta från **[SKK Avelsdata](https://hundar.skk.se/avelsdata)**.
+    3. **Ladda upp:** Använd menyn till vänster.
 
     ### 🎯 Steg 2: Filtrera
-    * **Ras:** Välj din ras (t.ex. Korthårig Vorsteh, KLM).
-    * **År:** Välj verksamhetsår (t.ex. 2024).
-    * **Klass:** Välj klass (UKL, ÖKL, EKL) för att få rätt underlag till rapporten.
+    * **Ras, År, Klass:** Justera filtren för att avgränsa urvalet.
+    * **Kön:** Filtrera på Hanar/Tikar vid behov.
 
     ### 📊 Steg 3: Analysera
-    Använd flikarna ovan för att se:
-    * **Eftersök:** Antal starter, könsuppdelning, och betygsfördelning (Vatten/Spår).
-    * **Fält:** Prisfördelning.
-    * **Hälsa:** HD/ED-statistik.
+    Använd flikarna för att se statistik och kopiera siffror till årssammanställningen.
     """)
 
-# === FLIK 5: INFO ===
-with tab5:
+# === FLIK 6: INFO ===
+with tab6:
     st.header("ℹ️ Information")
-    st.markdown("Detta verktyg hanterar data temporärt för statistiska ändamål. Ingen data sparas permanent.")
+    st.markdown("Detta verktyg hanterar data temporärt. Ingen data sparas permanent.")
 
 # --- EXPORT ---
 st.divider()
