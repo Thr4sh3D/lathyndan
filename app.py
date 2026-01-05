@@ -68,7 +68,6 @@ def load_prov_data(excel, csv_e, csv_j, txt):
     df_j_list = []
     status_msg = []
 
-    # 1. Excel Master
     if excel:
         try:
             xls = pd.ExcelFile(excel)
@@ -80,21 +79,23 @@ def load_prov_data(excel, csv_e, csv_j, txt):
                 is_eftersok = False
                 is_falt = False
                 
-                # Identifiering
-                if "blad2" in sheet.lower() or any(x in cols for x in ["vatten", "spår"]):
+                # Robustare identifiering
+                if "blad2" in sheet.lower() or "eftersök" in sheet.lower() or any(x in cols for x in ["vatten", "spår", "spar"]):
                     is_eftersok = True
-                elif "blad1" in sheet.lower() or any(x in cols for x in ["pris", "resultat", "fält"]):
+                elif "blad1" in sheet.lower() or "jakt" in sheet.lower() or any(x in cols for x in ["pris", "resultat", "fält", "falt"]):
                     is_falt = True
                 
                 if is_eftersok: 
                     df_e_list.append(df)
-                    status_msg.append(f"✅ Flik '{sheet}': Eftersök")
+                    status_msg.append(f"✅ Flik '{sheet}': Eftersök ({len(df)} rader)")
                 elif is_falt: 
                     df_j_list.append(df)
-                    status_msg.append(f"✅ Flik '{sheet}': Fält")
+                    status_msg.append(f"✅ Flik '{sheet}': Fält ({len(df)} rader)")
+                else:
+                    status_msg.append(f"⚠️ Flik '{sheet}': Ignorerad")
+
         except Exception as e: status_msg.append(f"Excel-fel: {e}")
 
-    # 2. Legacy CSV/TXT
     if csv_e: 
         try: df_e_list.append(pd.read_csv(csv_e, sep=';', encoding='latin1'))
         except: pass
@@ -128,29 +129,33 @@ def clean_df(df):
     col_map = {}
     for c in df.columns:
         cl = c.lower()
-        if 'datum' in cl: col_map['Datum'] = c
+        if 'datum' in cl and 'födelse' not in cl: col_map['Datum'] = c
         if 'klass' in cl: col_map['Klass'] = c
-        if 'ras' in cl: col_map['Ras'] = c
+        if 'ras' in cl and 'namn' not in cl: col_map['Ras'] = c
         if 'regnr' in cl or 'reg.nr' in cl: col_map['Regnr'] = c
         if 'kön' in cl or c == 'S': col_map['Kön'] = c
         
-        # HUNDNAMN: Prioritera 'namn'
+        # HUNDNAMN: Ignorera ägare, leta efter 'namn' eller 'hund'
+        if 'ag_fnamn' in cl or 'ägare' in cl: continue
         if c == 'namn': col_map['Hund'] = c
-        elif 'hund' in cl and 'fader' not in cl and 'moder' not in cl and 'namn' not in col_map: col_map['Hund'] = c
+        elif 'hund' in cl and 'fader' not in cl and 'moder' not in cl: col_map['Hund'] = c
         
-        # Eftersök
+        # EFTERSÖK
         if 'vatten' in cl and 'passion' not in cl: col_map['Vatten'] = c
-        if 'spår' in cl or 'spar' in cl: col_map['Spår'] = c 
-        if 'passion' in cl: col_map['Vattenpassion'] = c # Nytt
+        # Fixa Spår/Spar
+        if 'spår' in cl or 'spar' in cl and 'teknik' not in cl: col_map['Spår'] = c 
+        if 'passion' in cl: col_map['Vattenpassion'] = c
         
-        # Fält & Egenskaper
+        # FÄLT
         if 'resultat' in cl: col_map['Resultat'] = c
         elif 'pris' in cl and 'egenskap' not in cl: col_map['Resultat'] = c 
         if 'domare' in cl: col_map['Domare'] = c
-        if 'fart' in cl: col_map['Fart'] = c # Nytt
-        if 'vidd' in cl: col_map['Vidd'] = c # Nytt
-        if 'reviering' in cl: col_map['Reviering'] = c # Nytt
-        if 'följsamhet' in cl or 'foljsamhet' in cl: col_map['Följsamhet'] = c # Nytt
+        
+        # EGENSKAPER
+        if 'fart' in cl: col_map['Fart'] = c
+        if 'vidd' in cl: col_map['Vidd'] = c
+        if 'reviering' in cl: col_map['Reviering'] = c
+        if 'följsamhet' in cl or 'foljsamhet' in cl: col_map['Följsamhet'] = c
 
     for standard, original in col_map.items():
         df[standard] = df[original]
@@ -179,10 +184,11 @@ def clean_df(df):
     if 'Klass' in df.columns:
         df['Klass'] = df['Klass'].astype(str).str.upper().str.strip()
 
-    # Poäng och Egenskaper (siffror)
-    numeric_cols = ['Vatten', 'Spår', 'Resultat', 'Fart', 'Vidd', 'Reviering', 'Följsamhet', 'Vattenpassion']
-    for col in numeric_cols:
+    # Siffror (Poäng & Egenskaper)
+    num_cols = ['Vatten', 'Spår', 'Resultat', 'Fart', 'Vidd', 'Reviering', 'Följsamhet', 'Vattenpassion']
+    for col in num_cols:
         if col in df.columns: 
+            # Tvinga till numerisk, fel blir 0
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
 
     return df
@@ -227,7 +233,7 @@ def get_gender_text(df):
 
 def prepare_table(df, add_links=True):
     v = df.copy()
-    # Inkludera de nya egenskaperna
+    # Inkludera alla relevanta kolumner
     cols = ['Datum_Str', 'Regnr', 'Hund', 'Kön', 'Ras', 'Klass', 
             'Resultat', 'Pris', 
             'Vatten', 'Spår', 'Vattenpassion',
@@ -236,9 +242,9 @@ def prepare_table(df, add_links=True):
     final = [c for c in cols if c in v.columns]
     v = v[final].rename(columns={'Datum_Str': 'Datum', 'Regnr': 'Reg.nr', 'Hund': 'Hundnamn', 'Resultat': 'Pris'})
     
-    # Snygga till Pris (ta bort 0)
+    # Snygga till Pris (0 är inte ett pris)
     if 'Pris' in v.columns:
-        v['Pris'] = v['Pris'].apply(lambda x: f"{x}:a Pris" if x > 0 else "-")
+        v['Pris'] = v['Pris'].apply(lambda x: f"{x}:a Pris" if x > 0 else "")
 
     if add_links and 'Reg.nr' in v.columns:
         base = "https://hundar.skk.se/hunddata/Hund_sok.aspx?sok="
@@ -257,24 +263,25 @@ with tab1:
         unika = df_e_filt['Regnr'].nunique() if 'Regnr' in df_e_filt.columns else 0
         
         c1.metric("Antal Starter", f"{starts}", get_gender_text(df_e_filt))
-        c2.metric("Unika Individer", f"{unika}", help="Antal unika hundar som startat minst en gång")
+        c2.metric("Unika Individer", f"{unika}")
         
+        # Godkända: Båda grenarna >= 4 (Eftersom filen saknar pris-kolumn)
         if 'Vatten' in df_e_filt.columns and 'Spår' in df_e_filt.columns:
-            ok = df_e_filt[(df_e_filt['Vatten']>=4) & (df_e_filt['Spår']>=4)]
-            full = df_e_filt[(df_e_filt['Vatten']==10) & (df_e_filt['Spår']==10)]
-            c3.metric("Godkända (4+)", f"{len(ok)} ({int(len(ok)/starts*100)}%)")
+            ok = df_e_filt[(df_e_filt['Vatten'] >= 4) & (df_e_filt['Spår'] >= 4)]
+            full = df_e_filt[(df_e_filt['Vatten'] == 10) & (df_e_filt['Spår'] == 10)]
+            c3.metric("Godkända (4+ i båda)", f"{len(ok)} ({int(len(ok)/starts*100)}%)")
             
             st.divider()
             c_a, c_b, c_c = st.columns(3)
             with c_a: 
-                st.markdown("**Vattenbetyg**")
+                st.markdown("**💧 Vattenbetyg**")
                 st.dataframe(df_e_filt['Vatten'].value_counts().sort_index(ascending=False), use_container_width=True)
             with c_b: 
-                st.markdown("**Spårbetyg**")
+                st.markdown("**🌲 Spårbetyg**")
                 st.dataframe(df_e_filt['Spår'].value_counts().sort_index(ascending=False), use_container_width=True)
             with c_c:
                 if 'Vattenpassion' in df_e_filt.columns:
-                    st.markdown("**Vattenpassion**")
+                    st.markdown("**🌊 Vattenpassion**")
                     st.dataframe(df_e_filt['Vattenpassion'].value_counts().sort_index(ascending=False), use_container_width=True)
 
         st.dataframe(prepare_table(df_e_filt), use_container_width=True, hide_index=True,
@@ -299,7 +306,7 @@ with tab2:
         sel_year = int(valda_ar[0]) if valda_ar else 2024
         two_years = [sel_year, sel_year-1]
 
-        # Filtrera: Ras + SE + 2år + Pris>0 (Eftersom 0 inte är ett pris)
+        # Filter: Ras + SE + 2år + Pris>0 (0 är inte ett pris)
         df_se_2y = df_j[
             (df_j['Ras'].isin(valda_raser) if valda_raser else True) & 
             (df_j['Svensk'] == True) & 
@@ -308,10 +315,12 @@ with tab2:
         ]
 
         if not df_se_2y.empty and 'Resultat' in df_se_2y.columns and 'Klass' in df_se_2y.columns:
-            # Pivot med Resultat (1, 2, 3...)
-            df_se_2y['Pris'] = df_se_2y['Resultat'].astype(int).astype(str) + ":a Pris"
-            pivot = pd.crosstab(df_se_2y['Klass'], df_se_2y['Pris'], margins=True, margins_name="Totalt")
-            cols = sorted(pivot.columns.tolist()) # Sortera 1, 2, 3
+            # Pivot med 1:a, 2:a Pris
+            df_se_2y['PrisLabel'] = df_se_2y['Resultat'].astype(int).astype(str) + ":a Pris"
+            pivot = pd.crosstab(df_se_2y['Klass'], df_se_2y['PrisLabel'], margins=True, margins_name="Totalt")
+            
+            # Sortera kolumner (1:a först)
+            cols = sorted([c for c in pivot.columns if c != "Totalt"]) + ["Totalt"]
             st.dataframe(pivot[cols], use_container_width=True)
         else:
             st.warning(f"Inga svenska hundar med pris hittades för åren {two_years}.")
@@ -319,24 +328,23 @@ with tab2:
         st.divider()
         
         # --- EGENSKAPSBEDÖMNING ---
-        st.markdown("### 📏 Egenskapsbedömning (Genomsnitt)")
+        st.markdown("### 📏 Egenskaper i Fält (Medelvärde > 0)")
         egenskaper = ['Fart', 'Vidd', 'Reviering', 'Följsamhet']
         valid_eg = [e for e in egenskaper if e in df_j_filt.columns]
         
         if valid_eg:
-            # Räkna snitt per egenskap (exkludera 0or om det betyder "ej bedömd"?)
-            # Ofta är betyg 1-6. 0 betyder ofta ej satt. Vi filtrerar >0.
             stats = {}
             for e in valid_eg:
+                # Räkna bara de som fått ett betyg (>0)
                 avg = df_j_filt[df_j_filt[e] > 0][e].mean()
                 stats[e] = round(avg, 2) if pd.notna(avg) else 0
             
-            c_eg = st.columns(len(valid_eg))
+            cols = st.columns(len(valid_eg))
             for i, (k, v) in enumerate(stats.items()):
-                c_eg[i].metric(k, v)
+                cols[i].metric(k, f"{v}")
         
         st.divider()
-        st.markdown("**Detaljlista (Alla starter)**")
+        st.markdown("**Alla starter (Inkl. 0 pris)**")
         st.dataframe(prepare_table(df_j_filt), use_container_width=True, hide_index=True,
                      column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")})
     else: st.info("Ingen data för Fält.")
@@ -352,12 +360,10 @@ with tab3:
         st.divider()
         if 'Resultat' in df_full_filt.columns:
             st.markdown("**Prisfördelning (Svenska hundar)**")
-            # Filtrera bara svenska hundar och Pris > 0
             res_se = df_full_filt[(df_full_filt['Svensk']) & (df_full_filt['Resultat']>0)]['Resultat'].value_counts()
             if not res_se.empty:
                 st.dataframe(res_se, use_container_width=True)
-            else:
-                st.write("Inga pris tagna av svenska hundar.")
+            else: st.write("Inga pris tagna av svenska hundar.")
             
         st.dataframe(prepare_table(df_full_filt), use_container_width=True, hide_index=True,
                      column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")})
@@ -432,7 +438,7 @@ with tab6:
 
     **🌾 Fältprov (Tabell 1 i mallen)**
     * Här hittar du specialtabellen **"Prisfördelning Svenska Hundar (Senaste 2 åren)"** som krävs för rapporten.
-    * Tabellen visar endast hundar som tagit pris (1, 2, 3).
+    * Tabellen visar 1:a, 2:a, 3:e pris per klass (UKL, ÖKL, EKL). 0 Pris visas ej här.
     * Se även snittvärden för **Fart, Vidd, Reviering och Följsamhet**.
 
     **🔗 Tips:**
