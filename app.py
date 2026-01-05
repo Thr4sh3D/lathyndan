@@ -8,7 +8,7 @@ import re
 st.set_page_config(page_title="SVK Avelsstatistik", page_icon="🐕", layout="wide")
 
 st.title("📊 SVK - Statistikverktyg för avel")
-st.markdown("Automatiskt underlag för **årssammanställningar** och avelsuppföljning.")
+st.markdown("Automatiskt underlag för **årssammanställningar** och avelsuppföljning. Verktyget är till för **avelsråd och avelsfunktionärer** inom SVK.")
 
 # --- 1. LADDA UPP FILER ---
 st.sidebar.header("📂 1. Ladda upp data")
@@ -71,24 +71,28 @@ def load_prov_data(excel, csv_e, csv_j, txt):
                 df = pd.read_excel(xls, sheet_name=sheet)
                 df = df.dropna(how='all')
                 
-                # Enkel logik: Blad1=Fält, Blad2=Eftersök (Eller baserat på kolumner)
+                # Identifiering
                 cols = [str(c).lower() for c in df.columns]
                 is_eftersok = False
                 is_falt = False
                 
+                # Prioritera innehåll, men använd fliknamn som fallback
                 if "blad2" in sheet.lower() or any(x in cols for x in ["vatten", "spår"]):
                     is_eftersok = True
                 elif "blad1" in sheet.lower() or any(x in cols for x in ["pris", "resultat", "fält"]):
                     is_falt = True
                 
-                if is_eftersok: df_e_list.append(df)
-                elif is_falt: df_j_list.append(df)
-                
-                status_msg.append(f"Flik '{sheet}': {len(df)} rader -> {'Eftersök' if is_eftersok else 'Fält' if is_falt else 'Ignorerad'}")
+                if is_eftersok: 
+                    df_e_list.append(df)
+                    status_msg.append(f"✅ Flik '{sheet}': {len(df)} rader (Eftersök)")
+                elif is_falt: 
+                    df_j_list.append(df)
+                    status_msg.append(f"✅ Flik '{sheet}': {len(df)} rader (Fält)")
+                else:
+                    status_msg.append(f"⚠️ Flik '{sheet}': Ignorerad (Okänt innehåll)")
 
-        except Exception as e: status_msg.append(f"Excel-fel: {e}")
+        except Exception as e: status_msg.append(f"❌ Excel-fel: {e}")
 
-    # CSV/TXT support
     if csv_e: 
         try: df_e_list.append(pd.read_csv(csv_e, sep=';', encoding='latin1'))
         except: pass
@@ -107,13 +111,14 @@ def load_prov_data(excel, csv_e, csv_j, txt):
 df_e_raw, df_j_raw, logs = load_prov_data(uploaded_excel, uploaded_csv_e, uploaded_csv_j, uploaded_txt)
 df_halsa_raw = parse_health_file(uploaded_halsa) if uploaded_halsa else pd.DataFrame()
 
-# --- DIAGNOSRUTA (Visas alltid om data finns) ---
+# --- DIAGNOSRUTA (HOPFÄLLD) ---
 if uploaded_excel and (not df_e_raw.empty or not df_j_raw.empty):
-    with st.expander("ℹ️ Inläsningsstatus (Klicka för att se detaljer)", expanded=True):
+    with st.expander("ℹ️ Klicka här för inläsningsstatus", expanded=False):
         for l in logs: st.write(l)
+        st.divider()
         st.write(f"**Eftersök:** {len(df_e_raw)} rader totalt.")
         st.write(f"**Fält:** {len(df_j_raw)} rader totalt.")
-        if not df_e_raw.empty: st.write(f"Kolumner Eftersök: {list(df_e_raw.columns)}")
+        if not df_e_raw.empty: st.caption(f"Kolumner Eftersök: {list(df_e_raw.columns)}")
 
 # --- CLEANING ---
 def clean_df(df):
@@ -134,15 +139,15 @@ def clean_df(df):
         if 'vatten' in cl: col_map['Vatten'] = c
         if 'spår' in cl: col_map['Spår'] = c
         if 'resultat' in cl: col_map['Resultat'] = c
-        elif 'pris' in cl: col_map['Resultat'] = c # Mappa Pris till Resultat
+        elif 'pris' in cl: col_map['Resultat'] = c 
         if 'domare' in cl: col_map['Domare'] = c
 
     for standard, original in col_map.items():
         df[standard] = df[original]
 
-    # Defaults om kolumner saknas
+    # Defaults
     if 'Ras' not in df.columns: df['Ras'] = "Okänd Ras"
-    if 'År' not in df.columns: df['År'] = 2024 # Fallback
+    if 'År' not in df.columns: df['År'] = 2024
     
     # Datumfix
     if 'Datum' in df.columns:
@@ -167,7 +172,6 @@ df_j = clean_df(df_j_raw)
 # --- FILTER ---
 st.sidebar.header("🔍 2. Filtrering")
 
-# Hämta filtervärden (Hantera om listorna är tomma)
 years = sorted(list(set(df_e.get('År', [])) | set(df_j.get('År', []))), reverse=True)
 if not years: years = [2024]
 
@@ -193,7 +197,7 @@ def apply_filter(df):
 
 df_e_filt = apply_filter(df_e)
 df_j_filt = apply_filter(df_j)
-df_h_filt = apply_filter(df_halsa_raw) # Enkel filtrering för hälsa
+df_h_filt = apply_filter(df_halsa_raw)
 
 # --- VISNING ---
 def prepare_table(df, type="Standard", add_links=True):
@@ -202,7 +206,6 @@ def prepare_table(df, type="Standard", add_links=True):
     if type=="Eftersök": cols += ['Vatten', 'Spår']
     if type=="Fält": cols += ['Resultat', 'Domare']
     
-    # Ta bara med kolumner som finns
     final = [c for c in cols if c in v.columns]
     v = v[final].rename(columns={'Datum_Str': 'Datum', 'Regnr': 'Reg.nr', 'Hund': 'Hundnamn'})
     
@@ -218,7 +221,7 @@ def get_gender_text(df):
     return f"({h} H, {t} T)"
 
 # --- TABS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🏥 Hälsa", "❓ Guide", "ℹ️ Info"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌲 Eftersök", "🌾 Fältprov", "🏥 Hälsa", "❓ Guide", "ℹ️ Info & GDPR"])
 
 with tab1:
     if not df_e_filt.empty:
@@ -226,7 +229,6 @@ with tab1:
         starts = len(df_e_filt)
         c1.metric("Starter", f"{starts}", get_gender_text(df_e_filt))
         
-        # Godkända
         if 'Vatten' in df_e_filt.columns and 'Spår' in df_e_filt.columns:
             ok = df_e_filt[(df_e_filt['Vatten']>=4) & (df_e_filt['Spår']>=4)]
             full = df_e_filt[(df_e_filt['Vatten']==10) & (df_e_filt['Spår']==10)]
@@ -236,15 +238,18 @@ with tab1:
             st.divider()
             cc1, cc2 = st.columns(2)
             with cc1:
+                st.markdown("**Vattenbetyg**")
                 vc = df_e_filt['Vatten'].value_counts().sort_index(ascending=False)
                 st.dataframe(vc, use_container_width=True)
             with cc2:
+                st.markdown("**Spårbetyg**")
                 sc = df_e_filt['Spår'].value_counts().sort_index(ascending=False)
                 st.dataframe(sc, use_container_width=True)
         
+        st.divider()
         st.dataframe(prepare_table(df_e_filt, "Eftersök"), use_container_width=True, hide_index=True,
                      column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")})
-    else: st.info("Ingen data för Eftersök. Kontrollera inläsningsstatus ovan.")
+    else: st.info("Ingen data för Eftersök.")
 
 with tab2:
     if not df_j_filt.empty:
@@ -253,31 +258,91 @@ with tab2:
         
         if 'Resultat' in df_j_filt.columns:
             st.divider()
+            st.markdown("**Prisfördelning**")
             pc = df_j_filt['Resultat'].value_counts()
             c1, c2 = st.columns([1,2])
             with c1: st.dataframe(pc, use_container_width=True)
             with c2: st.plotly_chart(px.pie(values=pc.values, names=pc.index), use_container_width=True)
 
+        st.divider()
         st.dataframe(prepare_table(df_j_filt, "Fält"), use_container_width=True, hide_index=True,
                      column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")})
-    else: st.info("Ingen data för Fält. Kontrollera inläsningsstatus ovan.")
+    else: st.info("Ingen data för Fält.")
 
 with tab3:
     if not df_h_filt.empty:
         res_col = next((c for c in df_h_filt.columns if 'res' in c.lower() or 'dia' in c.lower()), None)
         if res_col:
+            st.markdown(f"**Statistik: {res_col}**")
             rc = df_h_filt[res_col].value_counts()
             st.bar_chart(rc)
         st.dataframe(df_h_filt, use_container_width=True)
-    else: st.info("Ladda upp hälsofil.")
+    else: st.info("Ingen hälsodata laddad.")
 
 with tab4:
-    st.markdown("## 📘 Guide")
-    st.markdown("1. Ladda upp Excel-filen.\n2. Kontrollera att Ras och År stämmer i filtret.\n3. Läs av tabellerna.")
+    st.markdown("## 📘 Användarguide (SVK)")
+    st.markdown("Detta verktyg är framtaget för **avelsråd och avelsfunktionärer inom SVK** för att underlätta arbetet med årssammanställningar.")
+    
+    st.markdown("""
+    ### 📂 Steg 1: Hämta & Ladda upp Data
+    
+    **A. Provresultat (Jakt & Eftersök)**
+    * Denna fil ("Årsstatistik") hämtas från Avelskommitténs **Gemensamma Google Drive**.
+    * Om du saknar behörighet, kontakta din sammankallande.
+    * Ladda upp Excel-filen under rubriken "Provresultat" i menyn.
+
+    **B. Hälsodata (HD/ED)**
+    * Gå till **[SKK Avelsdata](https://hundar.skk.se/avelsdata)**.
+    * Sök fram din ras (t.ex. Korthårig Vorsteh, Breton, KLM).
+    * Välj fliken **Hälsa** och sedan diagnos (t.ex. Höftledsdysplasi).
+    * Klicka på **Excel-ikonen** för att ladda ner listan.
+    * Ladda upp filen under rubriken "Hälsodata" i menyn.
+
+    ---
+
+    ### 🎯 Steg 2: Filtrera och Avgränsa
+    Använd menyn till vänster för att ställa in exakt vad du vill se:
+    1. **Ras:** Välj din ras.
+    2. **År:** Välj det verksamhetsår du arbetar med (t.ex. 2024).
+    3. **Klass:** För provresultat, välj klass (UKL, ÖKL, EKL) för att få korrekta siffror till rapporten.
+    4. **Kön:** Vid behov kan du filtrera på Hanar eller Tikar.
+
+    ---
+
+    ### 📊 Steg 3: Analys & Sammanställning
+    
+    **🌲 Eftersök (Tabell 2 & 3 i mallen)**
+    * Gå till fliken **Eftersök**.
+    * **Starter:** Se rutan "Antal Starter" (visar även fördelning H/T).
+    * **Resultat:** Använd tabellerna för "Vattenbetyg" och "Spårbetyg" för att fylla i betygsfördelningen.
+    * **Godkända:** Se rutan för "Godkända (4+)" och "Full pott".
+
+    **🌾 Fältprov (Tabell 1 i mallen)**
+    * Gå till fliken **Fältprov**.
+    * Använd tabellen "Prisfördelning" för att se antal 1:a pris, 2:a pris osv.
+
+    **🔗 Tips:**
+    I detaljlistorna är registreringsnumret en länk. Klicka på det för att komma direkt till hundens sida på SKK Hunddata.
+    """)
 
 with tab5:
-    st.header("ℹ️ Info")
-    st.write("Verktyg för SVK. Ingen data sparas.")
+    st.header("ℹ️ Information, Säkerhet & GDPR")
+    
+    st.markdown("""
+    ### 🛡️ SVK Datapolicy
+    Detta verktyg tillhandahålls för funktionärer inom Svenska Vorstehklubben (SVK).
+    
+    * **Syfte:** Effektivisera framtagandet av statistik till årssammanställningar och avelsutvärdering.
+    * **Rättslig grund:** Personuppgiftsbehandlingen (namn i resultatlistor) sker med stöd av *berättigat intresse* för föreningens avelsarbete och verksamhetsuppföljning.
+    
+    ### 🔐 Datasäkerhet
+    * **Ingen lagring:** De filer du laddar upp bearbetas endast i serverns tillfälliga arbetsminne.
+    * **Automatisk radering:** Så fort du stänger webbläsarfliken eller laddar om sidan raderas all data omedelbart. Inga kopior sparas i någon databas.
+    * **Kryptering:** All trafik är krypterad via HTTPS.
+
+    ### 📞 Support
+    Vid frågor om verktyget eller datahantering, kontakta Avelskommittén.
+    """)
 
 # --- EXPORT ---
 st.divider()
@@ -285,4 +350,6 @@ output = io.BytesIO()
 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
     if not df_e_filt.empty: prepare_table(df_e_filt, "Eftersök", False).to_excel(writer, index=False, sheet_name='Eftersök')
     if not df_j_filt.empty: prepare_table(df_j_filt, "Fält", False).to_excel(writer, index=False, sheet_name='Fält')
-st.download_button("Ladda ner Excel", output.getvalue(), "SVK_Statistik.xlsx")
+    if not df_h_filt.empty: df_h_filt.to_excel(writer, index=False, sheet_name='Hälsa')
+
+st.download_button("📥 Ladda ner Statistik (Excel)", output.getvalue(), "SVK_Statistik.xlsx")
