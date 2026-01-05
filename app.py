@@ -115,6 +115,11 @@ df_halsa_raw = parse_generic_file(uploaded_halsa) if uploaded_halsa else pd.Data
 df_full_raw = parse_generic_file(uploaded_fullbruk) if uploaded_fullbruk else pd.DataFrame()
 df_vilt_raw = parse_generic_file(uploaded_viltspar) if uploaded_viltspar else pd.DataFrame()
 
+# --- DIAGNOSRUTA (HOPFÄLLD) ---
+if uploaded_excel and (not df_e_raw.empty or not df_j_raw.empty):
+    with st.expander("ℹ️ Klicka här för inläsningsstatus", expanded=False):
+        for l in logs: st.write(l)
+
 # --- CLEANING ---
 def clean_df(df):
     if df.empty: return df
@@ -129,28 +134,31 @@ def clean_df(df):
         if 'regnr' in cl or 'reg.nr' in cl: col_map['Regnr'] = c
         if 'kön' in cl or c == 'S': col_map['Kön'] = c
         
-        # HUNDNAMN
+        # HUNDNAMN (Ignorera ägare)
         if 'ag_fnamn' in cl or 'ägare' in cl: continue
         if c == 'namn': col_map['Hund'] = c
         elif 'hund' in cl and 'fader' not in cl and 'moder' not in cl: col_map['Hund'] = c
         
-        # Specifika
+        # EFTERSÖK
         if 'vatten' in cl and 'passion' not in cl: col_map['Vatten'] = c
         if 'spår' in cl or 'spar' in cl: col_map['Spår'] = c 
         if 'passion' in cl: col_map['Vattenpassion'] = c
         
+        # FÄLT
         if 'resultat' in cl: col_map['Resultat'] = c
         elif 'pris' in cl and 'egenskap' not in cl: col_map['Resultat'] = c 
         if 'domare' in cl: col_map['Domare'] = c
         
+        # EGENSKAPER
         if 'fart' in cl: col_map['Fart'] = c
         if 'vidd' in cl: col_map['Vidd'] = c
         if 'reviering' in cl: col_map['Reviering'] = c
-        if 'följsamhet' in cl: col_map['Följsamhet'] = c
+        if 'följsamhet' in cl or 'foljsamhet' in cl: col_map['Följsamhet'] = c
 
     for standard, original in col_map.items():
         df[standard] = df[original]
 
+    # Defaults
     if 'Ras' not in df.columns: df['Ras'] = "Okänd Ras"
     
     # Datumfix
@@ -160,9 +168,8 @@ def clean_df(df):
         df['År'] = df['Datum'].dt.year.fillna(0).astype(int)
     else: df['År'] = 2024
     
-    # SE-Hund Flagga (Identifierar svenskregistrerade)
+    # SE-Hund Flagga
     if 'Regnr' in df.columns:
-        # SE eller S följt av siffror
         df['Svensk'] = df['Regnr'].astype(str).str.upper().str.match(r'^(SE|S\d)')
     else: df['Svensk'] = False
 
@@ -175,7 +182,7 @@ def clean_df(df):
     if 'Klass' in df.columns:
         df['Klass'] = df['Klass'].astype(str).str.upper().str.strip()
 
-    # Siffror
+    # Siffror (Poäng & Egenskaper)
     num_cols = ['Vatten', 'Spår', 'Resultat', 'Fart', 'Vidd', 'Reviering', 'Följsamhet', 'Vattenpassion']
     for col in num_cols:
         if col in df.columns: 
@@ -223,27 +230,41 @@ def get_gender_text(df):
 
 def prepare_table(df, add_links=True):
     v = df.copy()
-    cols = ['Datum_Str', 'Regnr', 'Hund', 'Kön', 'Ras', 'Klass', 
-            'Resultat', 'Pris', 
-            'Vatten', 'Spår', 'Vattenpassion',
-            'Fart', 'Vidd', 'Reviering', 'Följsamhet', 'Domare']
     
-    final = [c for c in cols if c in v.columns]
-    v = v[final].rename(columns={'Datum_Str': 'Datum', 'Regnr': 'Reg.nr', 'Hund': 'Hundnamn', 'Resultat': 'Pris'})
+    # 1. Definiera önskade kolumner
+    desired_cols = [
+        'Datum_Str', 'Regnr', 'Hund', 'Kön', 'Ras', 'Klass', 
+        'Resultat', # Resultat behövs för logik, men omdöps till Pris senare
+        'Vatten', 'Spår', 'Vattenpassion',
+        'Fart', 'Vidd', 'Reviering', 'Följsamhet', 'Domare'
+    ]
     
+    # 2. Plocka ENDAST ut kolumner som finns i v (undvik KeyError)
+    existing_cols = [c for c in desired_cols if c in v.columns]
+    v = v[existing_cols] # Nu har vi rensat bort allt skräp
+    
+    # 3. Döp om till snygga rubriker
+    rename_map = {'Datum_Str': 'Datum', 'Regnr': 'Reg.nr', 'Hund': 'Hundnamn', 'Resultat': 'Pris'}
+    v = v.rename(columns=rename_map)
+    
+    # 4. Formatera Pris (Endast om kolumnen Pris nu finns)
     if 'Pris' in v.columns:
+        # Se till att det är heltal för snyggare formatting
+        v['Pris'] = pd.to_numeric(v['Pris'], errors='coerce').fillna(0).astype(int)
         v['Pris'] = v['Pris'].apply(lambda x: f"{x}:a Pris" if x > 0 else "")
 
+    # 5. Skapa länkar
     if add_links and 'Reg.nr' in v.columns:
         base = "https://hundar.skk.se/hunddata/Hund_sok.aspx?sok="
         v['Reg.nr'] = v['Reg.nr'].apply(lambda x: f"{base}{x}" if pd.notna(x) else x)
+        
     return v
 
 # --- TABS ---
 tab_names = ["📄 Underlag Årsrapport", "🌲 Eftersök", "🌾 Fältprov", "🐕 Fullbruk", "🩸 Viltspår", "🏥 Hälsa", "❓ Guide", "ℹ️ Info"]
 tabs = st.tabs(tab_names)
 
-# === TAB 1: ÅRSRAPPORT (NY) ===
+# === TAB 1: ÅRSRAPPORT ===
 with tabs[0]:
     st.header("📄 Underlag för Årssammanställning")
     st.markdown("Här samlas statistiken exakt så som den efterfrågas i rapportmallen. Notera att **rasfiltret** i menyn används, men **årsfiltret ignoreras** här för att visa jämförelser.")
@@ -251,37 +272,25 @@ with tabs[0]:
     if not valda_raser:
         st.warning("Välj en ras i menyn till vänster.")
     else:
-        # Filtrera endast på Ras (ignorera År) för att kunna göra jämförelser
         df_j_ras = df_j[df_j['Ras'].isin(valda_raser)] if not df_j.empty else pd.DataFrame()
         df_e_ras = df_e[df_e['Ras'].isin(valda_raser)] if not df_e.empty else pd.DataFrame()
         df_full_ras = df_full[df_full['Ras'].isin(valda_raser)] if not df_full.empty else pd.DataFrame()
         df_vilt_ras = df_vilt[df_vilt['Ras'].isin(valda_raser)] if not df_vilt.empty else pd.DataFrame()
 
-        # --- TABELL 2: STARTER & UNIKA ---
+        # TABELL 2
         st.subheader("Tabell 2: Antal starter och unika hundar (per år)")
         if not df_j_ras.empty or not df_e_ras.empty:
-            # Aggregera Fält
-            f_stats = df_j_ras.groupby('År').agg(
-                Starter_Fält=('Regnr', 'count'),
-                Unika_Fält=('Regnr', 'nunique')
-            )
-            # Aggregera Eftersök
-            e_stats = df_e_ras.groupby('År').agg(
-                Starter_Eftersök=('Regnr', 'count'),
-                Unika_Eftersök=('Regnr', 'nunique')
-            )
-            # Slå ihop
+            f_stats = df_j_ras.groupby('År').agg(Starter_Fält=('Regnr', 'count'), Unika_Fält=('Regnr', 'nunique'))
+            e_stats = df_e_ras.groupby('År').agg(Starter_Eftersök=('Regnr', 'count'), Unika_Eftersök=('Regnr', 'nunique'))
             tab2 = pd.concat([f_stats, e_stats], axis=1).sort_index(ascending=False).fillna(0).astype(int)
             st.dataframe(tab2, use_container_width=True)
         else: st.info("Ingen data för Tabell 2.")
 
-        # --- TABELL 3: PRISFÖRDELNING SE-HUNDAR ---
+        # TABELL 3
         st.subheader("Tabell 3: Prisfördelning svenskregistrerade hundar (Senaste 2 åren)")
         if not df_j_ras.empty:
-            # Filtrera SE och Pris > 0
+            # Endast SE-hundar och Pris > 0
             df_se = df_j_ras[(df_j_ras['Svensk'] == True) & (df_j_ras['Resultat'] > 0)]
-            
-            # Hitta senaste åren
             avail_years = sorted(list(set(df_j_ras['År'])), reverse=True)[:2]
             
             if df_se.empty:
@@ -292,34 +301,28 @@ with tabs[0]:
                     df_y = df_se[df_se['År'] == y]
                     if not df_y.empty:
                         df_y['PrisLabel'] = df_y['Resultat'].astype(int).astype(str) + ":a pris"
-                        pivot = pd.crosstab(df_y['Resultat'], df_y['Klass']) # Resultat som rader
-                        # Sortera klasser EKL, ÖKL, UKL
+                        pivot = pd.crosstab(df_y['Resultat'], df_y['Klass'])
                         cols = [c for c in ['EKL', 'ÖKL', 'UKL'] if c in pivot.columns]
                         pivot = pivot[cols]
                         pivot['Totalt'] = pivot.sum(axis=1)
-                        # Fixa indexnamn
                         pivot.index = [f"{i}:a pris" for i in pivot.index]
                         st.dataframe(pivot, use_container_width=True)
                     else: st.text("Ingen data.")
         else: st.info("Ingen data för Tabell 3.")
 
-        # --- TABELL 4: EGENSKAPER (BETYG 4) ---
+        # TABELL 4
         st.subheader("Tabell 4: Andel med optimalt värde (4) i %")
         egenskaper = ['Fart', 'Vidd', 'Reviering', 'Följsamhet', 'Vattenpassion']
-        
-        # Kombinera Fält och Eftersök för att hitta Vattenpassion
         df_all_props = pd.concat([df_j_ras, df_e_ras], ignore_index=True)
         
         if not df_all_props.empty:
             res_list = []
-            avail_years_3 = sorted(list(set(df_all_props['År'])), reverse=True)[:3] # Senaste 3 åren
-            
+            avail_years_3 = sorted(list(set(df_all_props['År'])), reverse=True)[:3]
             for y in sorted(avail_years_3):
                 row = {'År': y}
                 df_y = df_all_props[df_all_props['År'] == y]
                 for prop in egenskaper:
                     if prop in df_y.columns:
-                        # Räkna de som har betyg (inte 0)
                         scored = df_y[df_y[prop] > 0]
                         if len(scored) > 0:
                             fours = len(scored[scored[prop] == 4])
@@ -328,56 +331,45 @@ with tabs[0]:
                         else: row[prop] = "-"
                     else: row[prop] = "-"
                 res_list.append(row)
-            
-            if res_list:
-                st.dataframe(pd.DataFrame(res_list).set_index('År'), use_container_width=True)
+            if res_list: st.dataframe(pd.DataFrame(res_list).set_index('År'), use_container_width=True)
         else: st.info("Ingen data för Tabell 4.")
 
-        # --- TABELL 5: FULLBRUK ---
-        st.subheader("Tabell 5: Fullbruksprov (Svenska hundar)")
-        if not df_full_ras.empty:
-            df_full_se = df_full_ras[df_full_ras['Svensk']==True]
-            if not df_full_se.empty:
-                fb_stats = df_full_se.groupby('År').agg(
-                    Starter=('Regnr', 'count'),
-                    Unika=('Regnr', 'nunique'),
-                    Pris_1=('Resultat', lambda x: (x==1).sum()),
-                    Pris_2=('Resultat', lambda x: (x==2).sum()),
-                    Pris_3=('Resultat', lambda x: (x==3).sum())
-                ).sort_index(ascending=False)
-                st.dataframe(fb_stats, use_container_width=True)
-            else: st.text("Inga svenska hundar.")
-        else: st.info("Ladda upp Fullbruksfil.")
+        # TABELL 5 & 6 (Fullbruk & Viltspår)
+        col5, col6 = st.columns(2)
+        with col5:
+            st.subheader("Tabell 5: Fullbruk (SE)")
+            if not df_full_ras.empty:
+                df_full_se = df_full_ras[df_full_ras['Svensk']==True]
+                if not df_full_se.empty:
+                    fb_stats = df_full_se.groupby('År').agg(
+                        Starter=('Regnr', 'count'), Unika=('Regnr', 'nunique'),
+                        Pris_1=('Resultat', lambda x: (x==1).sum()),
+                        Pris_2=('Resultat', lambda x: (x==2).sum()),
+                        Pris_3=('Resultat', lambda x: (x==3).sum())
+                    ).sort_index(ascending=False)
+                    st.dataframe(fb_stats, use_container_width=True)
+                else: st.text("Inga svenska hundar.")
+            else: st.info("Ladda upp Fullbruksfil.")
 
-        # --- TABELL 6: VILTSPÅR ---
-        st.subheader("Tabell 6: Viltspårprov (Svenska hundar)")
-        if not df_vilt_ras.empty:
-            df_vilt_se = df_vilt_ras[df_vilt_ras['Svensk']==True]
-            if not df_vilt_se.empty:
-                # Vi behöver gruppera på År och sedan räkna AKL/ÖKL separat
-                v_res = []
-                for y in sorted(list(set(df_vilt_se['År'])), reverse=True):
-                    d = df_vilt_se[df_vilt_se['År'] == y]
-                    
-                    # AKL Logic (Ofta text "Godkänd")
-                    akl = d[d['Klass'].str.contains('anlag', case=False, na=False)]
-                    okl = d[d['Klass'].str.contains('öppen', case=False, na=False)]
-                    
-                    # Försök tolka Resultat
-                    godkanda_akl = len(akl[akl['Resultat'].astype(str).str.contains('godk', case=False) | (akl['Resultat']==1)])
-                    
-                    row = {
-                        'År': y,
-                        'Starter AKL': len(akl),
-                        'Godkända AKL': godkanda_akl,
-                        'Starter ÖKL': len(okl),
-                        '1:a ÖKL': len(okl[okl['Resultat']==1]),
-                        '2:a ÖKL': len(okl[okl['Resultat']==2]),
-                        '3:a ÖKL': len(okl[okl['Resultat']==3]),
-                    }
-                    v_res.append(row)
-                st.dataframe(pd.DataFrame(v_res).set_index('År'), use_container_width=True)
-        else: st.info("Ladda upp Viltspårfil.")
+        with col6:
+            st.subheader("Tabell 6: Viltspår (SE)")
+            if not df_vilt_ras.empty:
+                df_vilt_se = df_vilt_ras[df_vilt_ras['Svensk']==True]
+                if not df_vilt_se.empty:
+                    v_res = []
+                    for y in sorted(list(set(df_vilt_se['År'])), reverse=True):
+                        d = df_vilt_se[df_vilt_se['År'] == y]
+                        akl = d[d['Klass'].str.contains('anlag', case=False, na=False)]
+                        okl = d[d['Klass'].str.contains('öppen', case=False, na=False)]
+                        godkanda_akl = len(akl[akl['Resultat'].astype(str).str.contains('godk', case=False) | (akl['Resultat']==1)])
+                        row = {
+                            'År': y, 'Starter AKL': len(akl), 'Godkända AKL': godkanda_akl,
+                            'Starter ÖKL': len(okl),
+                            '1:a ÖKL': len(okl[okl['Resultat']==1]), '2:a ÖKL': len(okl[okl['Resultat']==2]), '3:a ÖKL': len(okl[okl['Resultat']==3]),
+                        }
+                        v_res.append(row)
+                    st.dataframe(pd.DataFrame(v_res).set_index('År'), use_container_width=True)
+            else: st.info("Ladda upp Viltspårfil.")
 
 # === EFTERSÖK (TAB 2) ===
 with tabs[1]:
@@ -389,7 +381,6 @@ with tabs[1]:
         c1.metric("Antal Starter", f"{starts}", get_gender_text(df_e_filt))
         c2.metric("Unika Individer", f"{unika}")
         
-        # Godkända: Båda grenarna >= 4
         if 'Vatten' in df_e_filt.columns and 'Spår' in df_e_filt.columns:
             ok = df_e_filt[(df_e_filt['Vatten'] >= 4) & (df_e_filt['Spår'] >= 4)]
             c3.metric("Godkända (4+)", f"{len(ok)}")
@@ -397,14 +388,14 @@ with tabs[1]:
             st.divider()
             c_a, c_b, c_c = st.columns(3)
             with c_a: 
-                st.markdown("**Vattenbetyg**")
+                st.markdown("**💧 Vattenbetyg**")
                 st.dataframe(df_e_filt['Vatten'].value_counts().sort_index(ascending=False), use_container_width=True)
             with c_b: 
-                st.markdown("**Spårbetyg**")
+                st.markdown("**🌲 Spårbetyg**")
                 st.dataframe(df_e_filt['Spår'].value_counts().sort_index(ascending=False), use_container_width=True)
             with c_c:
                 if 'Vattenpassion' in df_e_filt.columns:
-                    st.markdown("**Vattenpassion**")
+                    st.markdown("**🌊 Vattenpassion**")
                     st.dataframe(df_e_filt['Vattenpassion'].value_counts().sort_index(ascending=False), use_container_width=True)
 
         st.dataframe(prepare_table(df_e_filt), use_container_width=True, hide_index=True,
@@ -420,9 +411,31 @@ with tabs[2]:
         c2.metric("Unika Individer", f"{df_j_filt['Regnr'].nunique()}")
         
         st.divider()
-        st.markdown("**Egenskaper (Snittvärden)**")
+        st.markdown("### 🇸🇪 Prisfördelning Svenska Hundar (Senaste 2 åren)")
+        
+        sel_year = int(valda_ar[0]) if valda_ar else 2024
+        two_years = [sel_year, sel_year-1]
+
+        df_se_2y = df_j[
+            (df_j['Ras'].isin(valda_raser) if valda_raser else True) & 
+            (df_j['Svensk'] == True) & 
+            (df_j['År'].isin(two_years)) &
+            (df_j['Resultat'] > 0) 
+        ]
+
+        if not df_se_2y.empty and 'Resultat' in df_se_2y.columns and 'Klass' in df_se_2y.columns:
+            df_se_2y['PrisLabel'] = df_se_2y['Resultat'].astype(int).astype(str) + ":a Pris"
+            pivot = pd.crosstab(df_se_2y['Klass'], df_se_2y['PrisLabel'], margins=True, margins_name="Totalt")
+            cols = sorted([c for c in pivot.columns if c != "Totalt"]) + ["Totalt"]
+            st.dataframe(pivot[cols], use_container_width=True)
+        else:
+            st.warning(f"Inga svenska hundar med pris hittades för åren {two_years}.")
+
+        st.divider()
+        st.markdown("### 📏 Egenskaper i Fält (Medelvärde > 0)")
         egenskaper = ['Fart', 'Vidd', 'Reviering', 'Följsamhet']
         valid_eg = [e for e in egenskaper if e in df_j_filt.columns]
+        
         if valid_eg:
             stats = {}
             for e in valid_eg:
@@ -432,40 +445,71 @@ with tabs[2]:
             for i, (k, v) in enumerate(stats.items()):
                 cols[i].metric(k, f"{v}")
         
+        st.divider()
+        st.markdown("**Alla starter (Detaljlista)**")
         st.dataframe(prepare_table(df_j_filt), use_container_width=True, hide_index=True,
                      column_config={"Reg.nr": st.column_config.LinkColumn("Reg.nr", display_text=r"sok=(.*)")})
     else: st.info("Ingen data för Fält.")
 
-# === ÖVRIGA TABS (Kortad kod för överskådlighet, samma logik som förut) ===
+# === ÖVRIGA TABS (Kortade men funktionella) ===
 with tabs[3]: # Fullbruk
-    if not df_full_filt.empty:
-        st.dataframe(prepare_table(df_full_filt), use_container_width=True, hide_index=True)
+    if not df_full_filt.empty: st.dataframe(prepare_table(df_full_filt), use_container_width=True, hide_index=True)
     else: st.info("Ladda fil.")
-
 with tabs[4]: # Viltspår
-    if not df_vilt_filt.empty:
-        st.dataframe(prepare_table(df_vilt_filt), use_container_width=True, hide_index=True)
+    if not df_vilt_filt.empty: st.dataframe(prepare_table(df_vilt_filt), use_container_width=True, hide_index=True)
     else: st.info("Ladda fil.")
-
 with tabs[5]: # Hälsa
-    if not df_h_filt.empty:
-        st.dataframe(df_h_filt, use_container_width=True)
+    if not df_h_filt.empty: st.dataframe(df_h_filt, use_container_width=True)
     else: st.info("Ladda fil.")
 
 with tabs[6]: # Guide
-    st.markdown("## 📘 Användarguide")
-    st.markdown("""
-    **Nyhet!** Använd fliken **'📄 Underlag Årsrapport'** för att se alla tabeller (2-6) färdigräknade.
+    st.markdown("## 📘 Användarguide (SVK)")
+    st.markdown("Detta verktyg är framtaget för **avelsråd och avelsfunktionärer inom SVK** för att underlätta arbetet med årssammanställningar.")
     
-    1. **Ladda upp filer** (Master-filen för Jakt/Eftersök, separata för Vilt/Fullbruk/Hälsa).
-    2. **Välj Ras** i menyn.
-    3. Gå till fliken **Underlag Årsrapport**.
-    4. Kopiera siffrorna direkt till Word-dokumentet.
+    st.markdown("""
+    ### 📂 Steg 1: Hämta & Ladda upp Data
+    **A. Provresultat (Jakt & Eftersök)**
+    * Denna fil ("Årsstatistik") hämtas från Avelskommitténs **Gemensamma Google Drive**.
+    * Om du saknar behörighet, kontakta din sammankallande.
+    * Ladda upp Excel-filen under rubriken "Provresultat" i menyn.
+
+    **B. Övriga Prov & Hälsa**
+    * Fullbruk och Viltspår laddas upp som separata filer.
+    * Hälsodata (HD/ED) hämtas som Excel från **[SKK Avelsdata](https://hundar.skk.se/avelsdata)**.
+
+    ---
+
+    ### 🎯 Steg 2: Filtrera och Avgränsa
+    Använd menyn till vänster för att ställa in exakt vad du vill se:
+    1. **Ras:** Välj din ras.
+    2. **År:** Välj det verksamhetsår du arbetar med (t.ex. 2024).
+
+    ---
+
+    ### 📊 Steg 3: Analys & Sammanställning (Flik 1)
+    
+    **📄 Underlag Årsrapport**
+    * Denna flik samlar alla tabeller du behöver till rapporten (Tabell 2-6).
+    * Den räknar ut starter, unika hundar, egenskapsvärden och prisfördelning för SE-hundar.
+
+    **🔗 Tips:**
+    I detaljlistorna är registreringsnumret en länk. Klicka på det för att komma direkt till hundens sida på SKK Hunddata.
     """)
 
 with tabs[7]: # Info
-    st.header("ℹ️ GDPR & Info")
-    st.markdown("Data hanteras temporärt och raderas vid stängning.")
+    st.header("ℹ️ Information, Säkerhet & GDPR")
+    st.markdown("""
+    ### 🛡️ SVK Datapolicy
+    Detta verktyg tillhandahålls för funktionärer inom Svenska Vorstehklubben (SVK).
+    * **Syfte:** Effektivisera framtagandet av statistik till årssammanställningar och avelsutvärdering.
+    * **Rättslig grund:** Personuppgiftsbehandlingen (namn i resultatlistor) sker med stöd av *berättigat intresse* för föreningens avelsarbete och verksamhetsuppföljning.
+    ### 🔐 Datasäkerhet
+    * **Ingen lagring:** De filer du laddar upp bearbetas endast i serverns tillfälliga arbetsminne.
+    * **Automatisk radering:** Så fort du stänger webbläsarfliken eller laddar om sidan raderas all data omedelbart.
+    * **Kryptering:** All trafik är krypterad via HTTPS.
+    ### 📞 Support
+    Vid frågor om verktyget eller datahantering, kontakta Avelskommittén.
+    """)
 
 # --- EXPORT ---
 st.divider()
@@ -473,5 +517,6 @@ output = io.BytesIO()
 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
     if not df_e_filt.empty: prepare_table(df_e_filt, False).to_excel(writer, index=False, sheet_name='Eftersök')
     if not df_j_filt.empty: prepare_table(df_j_filt, False).to_excel(writer, index=False, sheet_name='Fält')
+    if not df_full_filt.empty: prepare_table(df_full_filt, False).to_excel(writer, index=False, sheet_name='Fullbruk')
 
 st.download_button("📥 Ladda ner Excel", output.getvalue(), "SVK_Statistik.xlsx")
